@@ -2,7 +2,9 @@
 
 ## `training_ground`
 
-`src/training_ground/` is the canonical Gymnasium-compatible environment core.
+`src/training_ground/` is the canonical environment core. It exposes the bounded
+twelve-tool repair surface, records authenticated transcripts, and delegates final
+scoring to `strict_verifier`.
 
 ### Modules
 
@@ -13,7 +15,7 @@
 - `manifests.py` — `Manifest` and `list_instance_ids` for `train/dev/eval` splits.
 - `limits.py` — `Limits` checks on step count, bytes, and tick.
 - `authority.py` — `EpisodeAuthority` for transcript and integrity handling.
-- `transcripts.py` — `TranscriptStore` and `EpisodeTranscript` for deterministic replay.
+- `transcripts.py` — append-only HMAC-authenticated transcript recording and verification.
 - `loader.py` — `load_environment(split, seed, options)` and `load_environment_from_manifest`.
 - `cli.py` — `run-scripted`, `list-instances`, and `grade` CLI entrypoints.
 - `policies.py` — pair-blind reference policies and `IDEMPOTENT_FLOW`/`SETTINGS`.
@@ -24,6 +26,17 @@
 .\.venv\Scripts\python.exe -m training_ground.cli run-scripted --split eval --seed 0
 .\.venv\Scripts\python.exe -m training_ground.cli list-instances --split eval --count 5
 ```
+
+### Current guarantees
+
+- Pair-blind reference policies include diagnostics, traces, rollback, S0 restore,
+  candidate edits, deployment, public workload checks, and resume.
+- The two gold repair families in `training_ground.policies` score `1.0` on both
+  profiles under the strict verifier.
+- Public, shared-hidden, and member-hidden workloads check durable journal/effect
+  state, not just returned success strings.
+- Gymnasium is provided through `training_adapters.gym_env` and is covered by
+  `gymnasium.utils.env_checker.check_env`.
 
 ### Python API
 

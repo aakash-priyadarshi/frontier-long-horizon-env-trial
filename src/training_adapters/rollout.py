@@ -1,8 +1,4 @@
-"""Scripted and generic rollout runners (no paid model calls).
-
-These runners wrap the canonical training_ground environment so that smoke tests,
-APEX adapters, and Gymnasium share the same episode logic.
-"""
+"""Scripted and generic rollout runners (no paid model calls)."""
 
 from __future__ import annotations
 
@@ -10,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from training_ground.loader import load_environment
+from training_ground.policies import LOGICAL_IDENTITY_FLOW, SETTINGS, valid_repair_policy
 
 from .sanitize import sanitize_payload
 
@@ -35,6 +32,7 @@ class RolloutResult:
     final_observation: dict[str, Any] = field(default_factory=dict)
     success: bool = False
     truncated: bool = False
+    strict_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return sanitize_payload(
@@ -42,6 +40,7 @@ class RolloutResult:
                 "fixture_index": self.fixture_index,
                 "success": self.success,
                 "truncated": self.truncated,
+                "strict_score": self.strict_score,
                 "step_count": len(self.steps),
                 "final_observation": self.final_observation,
                 "steps": [
@@ -58,36 +57,12 @@ class RolloutResult:
 
 
 class ScriptedRecoveryPolicy:
-    """Deterministic public recovery path used for smoke tests.
+    """Strict valid repair policy used for APEX/local smokes."""
 
-    pause → rollback r0 → restore → settings edit → deploy → P1/P2/P3 → resume
-    """
-
-    def __init__(self) -> None:
-        self._plan: list[tuple[str, dict[str, Any]]] = [
-            ("release.status", {}),
-            ("recovery.pause", {}),
-            ("release.rollback", {"revision": "r0"}),
-            ("recovery.restore", {"snapshot_id": "S0"}),
-            (
-                "workspace.edit",
-                {
-                    "path": "service/settings.toml",
-                    "content": (
-                        "[service]\n"
-                        "intake_enabled = true\n"
-                        "settlement_enabled = true\n"
-                        "attempt_budget = 2\n"
-                        'transient_behavior = "retry"\n'
-                    ),
-                },
-            ),
-            ("release.deploy", {}),
-            ("runtime.run", {"workload_id": "P1"}),
-            ("runtime.run", {"workload_id": "P2"}),
-            ("runtime.run", {"workload_id": "P3"}),
-            ("recovery.resume", {}),
-            ("release.status", {}),
+    def __init__(self, flow: str = LOGICAL_IDENTITY_FLOW, settings: str = SETTINGS) -> None:
+        self._plan = [
+            (action["tool"], action["arguments"])
+            for action in valid_repair_policy(flow=flow, settings=settings)
         ]
         self._index = 0
 
@@ -103,9 +78,14 @@ def run_rollout(
     *,
     profile: int = 0,
     policy: Policy | None = None,
-    max_steps: int = 32,
+    max_steps: int = 64,
+    require_strict: bool = True,
 ) -> RolloutResult:
-    """Execute a policy against the training_ground environment."""
+    """Execute a policy against the training_ground environment.
+
+    When ``require_strict`` is True (default), success requires the real strict
+    verifier score of 1.0 — public canary closure alone is not enough.
+    """
     policy = policy or ScriptedRecoveryPolicy()
     result = RolloutResult(fixture_index=profile)
     env = load_environment(
@@ -125,41 +105,32 @@ def run_rollout(
                     step=step,
                     tool=tool,
                     arguments=arguments,
-                    response=info.get("response", {}),
+                    response={"digest": info.get("response_digest")},
                     observation=observation,
                 )
             )
-            if (
-                observation.get("incident") == "closed"
-                and observation.get("public_canary") == "pass"
-            ):
-                result.success = True
-                result.final_observation = {"ok": True, "status": observation}
-                break
             if terminated or truncated:
-                result.truncated = not result.success
-                result.final_observation = {"ok": False, "status": observation}
+                grade = info.get("grade") or env.grade()
+                result.strict_score = float(grade.get("score", 0.0))
+                if require_strict:
+                    result.success = result.strict_score == 1.0
+                else:
+                    result.success = (
+                        observation.get("incident") == "closed"
+                        and observation.get("public_canary") == "pass"
+                    )
+                result.truncated = truncated and not result.success
+                result.final_observation = {
+                    "ok": result.success,
+                    "status": observation,
+                    "strict_score": result.strict_score,
+                }
                 break
         else:
+            grade = env.grade()
+            result.strict_score = float(grade.get("score", 0.0))
             result.truncated = True
             result.final_observation = {"ok": False, "status": observation}
     finally:
         env.close()
     return result
-
-
-def run_rollout_from_action_list(
-    actions: list[tuple[str, dict[str, Any]]], *, profile: int = 0
-) -> RolloutResult:
-    class _ListPolicy:
-        def __init__(self) -> None:
-            self.i = 0
-
-        def select(self, observation: dict[str, Any], step: int) -> tuple[str, dict[str, Any]]:
-            if self.i >= len(actions):
-                return ("release.status", {})
-            item = actions[self.i]
-            self.i += 1
-            return item
-
-    return run_rollout(profile=profile, policy=_ListPolicy(), max_steps=len(actions) + 2)

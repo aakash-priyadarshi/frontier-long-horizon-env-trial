@@ -428,7 +428,8 @@ class AgentSession:
                 raise ToolError("effects view requires event_id selector")
             rows = self._store.rows(
                 """
-                SELECT effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
+                SELECT effect_id, occurrence_id, amount, kind, logical_effect_key,
+                       source_event_id, committed_tick
                 FROM effects WHERE source_event_id = ?
                 ORDER BY committed_tick
                 LIMIT ?

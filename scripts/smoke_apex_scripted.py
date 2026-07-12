@@ -1,4 +1,8 @@
-"""Local APEX task smoke without paid models."""
+"""Local APEX task smoke without paid models.
+
+Success requires a real strict verifier score of 1.0 after a valid repair.
+Public-only recovery must not print PASSED.
+"""
 
 from __future__ import annotations
 
@@ -28,23 +32,31 @@ def main() -> int:
         print("TASK_LAYOUT_FAIL", problems)
         return 1
 
-    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=16)
+    result = run_rollout(
+        profile=0, policy=ScriptedRecoveryPolicy(), max_steps=64, require_strict=True
+    )
+    success = bool(result.success and result.strict_score == 1.0)
     trial = sanitize_apex_trial_result(
         task_id="frontier-incident-smoke",
-        success=result.success,
+        success=success,
         step_count=len(result.steps),
     )
+    trial["metadata"]["strict_score"] = result.strict_score
+    trial["metadata"]["evaluation"] = {
+        "passed": success,
+        "mode": "strict_verifier",
+    }
     with tempfile.TemporaryDirectory(prefix="apex-smoke-") as tmp:
         out = Path(tmp)
         write_json(out / "trial_result.json", trial)
         (out / "smoke_verdict.txt").write_text(
-            format_apex_test_stdout(result.success), encoding="utf-8"
+            format_apex_test_stdout(success), encoding="utf-8"
         )
         os.environ["FRONTIER_ADAPTER_OUT"] = str(out)
         text = (out / "smoke_verdict.txt").read_text(encoding="utf-8")
         print(text, end="")
         print(json.dumps(trial, indent=2))
-        if "PASSED" not in text or not result.success:
+        if "PASSED" not in text or not success:
             return 1
     print("APEX_SCRIPTED_SMOKE_PASSED")
     return 0

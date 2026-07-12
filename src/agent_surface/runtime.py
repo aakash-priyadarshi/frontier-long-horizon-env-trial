@@ -141,11 +141,38 @@ class RuntimeStore:
             ),
         )[:32]
 
-    def _new_effect_id(self, event_id: str, occurrence_id: str, tick: int) -> str:
+    def _new_effect_id(
+        self, event_id: str, occurrence_id: str, logical_effect_key: str, tick: int
+    ) -> str:
         return "efx_" + digest(
             "effect-v1",
-            canonical_json([event_id, occurrence_id, tick, self.workload_id]),
+            canonical_json(
+                [event_id, occurrence_id, logical_effect_key, tick, self.workload_id]
+            ),
         )[:32]
+
+    def _payload_hash(self, command: dict[str, str]) -> str:
+        return digest("payload-v1", canonical_json(command))
+
+    def _existing_payload_hash(
+        self, command_key: str, occurrence_id: str
+    ) -> str | None:
+        row = self.store.connection.execute(
+            """
+            SELECT payload_hash FROM journal
+            WHERE command_key = ? AND occurrence_id = ?
+            ORDER BY seq LIMIT 1
+            """,
+            (command_key, occurrence_id),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _reject_conflicting_payload(
+        self, command_key: str, occurrence_id: str, payload_hash: str
+    ) -> None:
+        existing = self._existing_payload_hash(command_key, occurrence_id)
+        if existing is not None and existing != payload_hash:
+            raise ToolError("conflicting payload")
 
     def prepare(self, command: dict[str, str]) -> dict[str, str]:
         """s1: prepare the command."""
@@ -158,8 +185,8 @@ class RuntimeStore:
         tick = self._advance()
         command_key = command["command_key"]
         occurrence_id = command["occurrence_id"]
-        payload = canonical_json(command)
-        payload_hash = digest("payload-v1", payload)
+        payload_hash = self._payload_hash(command)
+        self._reject_conflicting_payload(command_key, occurrence_id, payload_hash)
         event_id = self._new_event_id(command_key, occurrence_id, tick)
         self.store.connection.execute(
             """
@@ -190,6 +217,9 @@ class RuntimeStore:
         tick = self._advance()
         command_key = command["command_key"]
         occurrence_id = command["occurrence_id"]
+        self._reject_conflicting_payload(
+            command_key, occurrence_id, self._payload_hash(command)
+        )
         self.store.connection.execute(
             """
             INSERT OR REPLACE INTO command_keys(command_key, occurrence_id, event_id, state)
@@ -227,6 +257,7 @@ class RuntimeStore:
         event_id = event["event_id"]
         occurrence_id = event["occurrence_id"]
         command_key = event["command_key"]
+        logical_effect_key = event.get("logical_effect_key", "settlement")
         attempt = self._attempts.get(event_id, 0) + 1
         self._attempts[event_id] = attempt
         tick = self._advance()
@@ -235,14 +266,24 @@ class RuntimeStore:
             self._append_trace(STAGE_TRANSIENT, event_id, command_key, occurrence_id)
             self._control(f"transient failure before effect for {event_id}")
             raise TransientFailure()
-        effect_id = self._new_effect_id(event_id, occurrence_id, tick)
+        effect_id = self._new_effect_id(
+            event_id, occurrence_id, logical_effect_key, tick
+        )
         self.store.connection.execute(
             """
             INSERT INTO effects(
-                effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
-            ) VALUES (?, ?, ?, 'settlement', ?, ?)
+                effect_id, occurrence_id, amount, kind, logical_effect_key,
+                source_event_id, committed_tick
+            ) VALUES (?, ?, ?, 'settlement', ?, ?, ?)
             """,
-            (effect_id, occurrence_id, EFFECT_AMOUNT, event_id, tick),
+            (
+                effect_id,
+                occurrence_id,
+                EFFECT_AMOUNT,
+                logical_effect_key,
+                event_id,
+                tick,
+            ),
         )
         self._append_trace(STAGE_S5, event_id, command_key, occurrence_id)
         if self._s5_cutpoint_pending:
@@ -290,6 +331,26 @@ class RuntimeStore:
         ).fetchone()
         return str(row[0]) if row is not None else None
 
+    def get_command_registration(
+        self, command_key: str, occurrence_id: str
+    ) -> dict[str, str] | None:
+        """Return event and payload metadata for a registered command occurrence."""
+        row = self.store.connection.execute(
+            """
+            SELECT event_id, payload_hash
+            FROM journal
+            WHERE command_key = ? AND occurrence_id = ?
+            ORDER BY seq LIMIT 1
+            """,
+            (command_key, occurrence_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "event_id": str(row[0]),
+            "payload_hash": str(row[1]),
+        }
+
     def effect_exists(self, event_id: str) -> str | None:
         """Return an existing effect id for an event.
 
@@ -302,19 +363,55 @@ class RuntimeStore:
         ).fetchone()
         return str(row[0]) if row is not None else None
 
-    def intent_create(self, event_id: str, command_key: str, occurrence_id: str) -> str:
+    def effect_by_key(self, event_id: str, logical_effect_key: str) -> str | None:
+        """Return an effect id for the event and logical effect key."""
+        row = self.store.connection.execute(
+            """
+            SELECT effect_id FROM effects
+            WHERE source_event_id = ? AND logical_effect_key = ?
+            ORDER BY committed_tick LIMIT 1
+            """,
+            (event_id, logical_effect_key),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def intent_create(
+        self,
+        event_id: str,
+        command_key: str,
+        occurrence_id: str,
+        logical_effect_key: str = "settlement",
+    ) -> str:
         """Create an atomic effect-intent record for the event."""
         tick = self._advance()
         intent_id = "int_" + digest(
             "intent-v1",
-            canonical_json([event_id, command_key, occurrence_id, tick, self.workload_id]),
+            canonical_json(
+                [
+                    event_id,
+                    command_key,
+                    occurrence_id,
+                    logical_effect_key,
+                    tick,
+                    self.workload_id,
+                ]
+            ),
         )[:32]
         self.store.connection.execute(
             """
-            INSERT INTO intents(intent_id, event_id, command_key, occurrence_id, created_tick, state)
-            VALUES (?, ?, ?, ?, ?, 'created')
+            INSERT INTO intents(
+                intent_id, source_event_id, command_key, occurrence_id,
+                logical_effect_key, created_tick, state, effect_id
+            ) VALUES (?, ?, ?, ?, ?, ?, 'created', NULL)
             """,
-            (intent_id, event_id, command_key, occurrence_id, tick),
+            (
+                intent_id,
+                event_id,
+                command_key,
+                occurrence_id,
+                logical_effect_key,
+                tick,
+            ),
         )
         return intent_id
 
@@ -326,23 +423,45 @@ class RuntimeStore:
             (effect_id, intent_id),
         )
 
-    def mark_event(self, event_id: str, label: str) -> None:
+    def mark_event(
+        self, event_id: str, mark_key: str, mark_state: str = "marked"
+    ) -> None:
         """Add a neutral event mark for debugging/audit purposes."""
         self._advance()
         self.store.connection.execute(
-            "INSERT OR REPLACE INTO event_marks(event_id, label) VALUES (?, ?)",
-            (event_id, label),
+            """
+            INSERT OR REPLACE INTO event_marks(event_id, mark_key, mark_state)
+            VALUES (?, ?, ?)
+            """,
+            (event_id, mark_key, mark_state),
         )
 
-    def get_intent(self, event_id: str) -> dict[str, str] | None:
-        """Return the latest intent for an event."""
+    def get_intent(
+        self, event_id: str, logical_effect_key: str = "settlement"
+    ) -> dict[str, str] | None:
+        """Return the latest intent for an event and logical effect key."""
         row = self.store.connection.execute(
-            "SELECT intent_id, state, effect_id FROM intents WHERE event_id = ? ORDER BY created_tick DESC LIMIT 1",
-            (event_id,),
+            """
+            SELECT intent_id, source_event_id, command_key, occurrence_id,
+                   logical_effect_key, created_tick, state, effect_id
+            FROM intents
+            WHERE source_event_id = ? AND logical_effect_key = ?
+            ORDER BY created_tick DESC LIMIT 1
+            """,
+            (event_id, logical_effect_key),
         ).fetchone()
         if row is None:
             return None
-        return {"intent_id": row[0], "state": row[1], "effect_id": row[2] or ""}
+        return {
+            "intent_id": row[0],
+            "source_event_id": row[1],
+            "command_key": row[2],
+            "occurrence_id": row[3],
+            "logical_effect_key": row[4],
+            "created_tick": str(row[5]),
+            "state": row[6],
+            "effect_id": row[7] or "",
+        }
 
 
 class RuntimeEngine:
@@ -505,7 +624,6 @@ class RuntimeEngine:
                 f"t={self.store.tick()} intake accepted alias={runtime.alias}"
             )
 
-        effect_count = 0
         for event_id in event_ids:
             seq = self.store.connection.execute(
                 "SELECT seq FROM journal WHERE event_id = ?", (event_id,)
@@ -519,15 +637,20 @@ class RuntimeEngine:
             self._deliver_event(
                 runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=True
             )
-            effect_count += 1
-            runtime._log(self._public_canary_line(runtime.alias, effect_count))
+            durable_count = self._effect_count_for_event_keys(
+                [event_id], ["settlement"]
+            )
+            runtime._log(self._public_canary_line(runtime.alias, durable_count))
+
+        effect_count = self._effect_count_for_event_keys(event_ids, ["settlement"])
+        outcome = "pass" if effect_count == len(event_ids) else "fail"
 
         return self._build_receipt(
             runtime,
             event_count=len(event_ids),
             effect_count=effect_count,
             net_effect_count=effect_count * EFFECT_AMOUNT,
-            outcome="pass" if effect_count == len(event_ids) else "fail",
+            outcome=outcome,
         )
 
     def _run_cutpoint_diagnostic(
@@ -575,7 +698,6 @@ class RuntimeEngine:
                 "SELECT event_id, seq FROM journal WHERE seq >= ? ORDER BY seq",
                 (start_seq,),
             ).fetchall()
-            effect_count = 0
             for event_id, sequence in rows:
                 runtime._log(
                     f"t={self.store.tick()} delivery window opened alias={runtime.alias} attempt=1"
@@ -583,7 +705,7 @@ class RuntimeEngine:
                 self._deliver_event(
                     runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
                 )
-                effect_count += 1
+            effect_count = self._effect_count_for_rows(rows)
             return self._build_receipt(
                 runtime,
                 event_count=len(rows),
@@ -689,18 +811,17 @@ class RuntimeEngine:
                 "SELECT event_id, seq FROM journal WHERE command_key = ? AND occurrence_id = ? ORDER BY seq",
                 (command["command_key"], command["occurrence_id"]),
             ).fetchall()
-            effect_count = 0
             for event_id, sequence in rows:
                 self._deliver_event(
                     runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
                 )
-                effect_count += 1
+            effect_count = self._effect_count_for_rows(rows)
             return self._build_receipt(
                 runtime,
                 event_count=len(rows),
                 effect_count=effect_count,
                 net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="pass" if len(rows) == 1 else "fail",
+                outcome="pass" if len(rows) == 1 and effect_count == 1 else "fail",
             )
 
         if runtime.workload_id == "H-B2":
@@ -718,18 +839,161 @@ class RuntimeEngine:
                 "SELECT event_id, seq FROM journal WHERE command_key = ? AND occurrence_id = ? ORDER BY seq",
                 (command["command_key"], command["occurrence_id"]),
             ).fetchall()
-            effect_count = 0
             for event_id, sequence in rows:
                 self._deliver_event(
                     runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
                 )
-                effect_count += 1
+            effect_count = self._effect_count_for_rows(rows)
             return self._build_receipt(
                 runtime,
                 event_count=len(rows),
                 effect_count=effect_count,
                 net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if len(rows) == 1 and effect_count == 1 else "fail",
+            )
+
+        if runtime.workload_id == "H-A3":
+            # Profile 0: one event legitimately emits two independent logical effects.
+            command = {
+                "command_key": "cmd_a_logical_multi",
+                "occurrence_id": "occ_a_logical_multi",
+                "alias": runtime.alias,
+                "amount": str(EFFECT_AMOUNT),
+            }
+            event_id = self._accept_command(runtime, service_runtime, command)
+            seq = self.store.connection.execute(
+                "SELECT seq FROM journal WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            if seq is None:
+                raise ToolError("event not in journal")
+            self._deliver_event(
+                runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=False
+            )
+            event = runtime.load(event_id)
+            event["logical_effect_key"] = "notify"
+            flow_module = sys.modules.get("service.flow")
+            if flow_module is None or not hasattr(flow_module, "s5"):
+                raise ToolError("active workspace service/flow.py is missing s5")
+            flow_module.s5(event, runtime)
+            rows = self.store.connection.execute(
+                """
+                SELECT logical_effect_key FROM effects
+                WHERE source_event_id = ?
+                ORDER BY logical_effect_key
+                """,
+                (event_id,),
+            ).fetchall()
+            keys = [row[0] for row in rows]
+            effect_count = len(keys)
+            return self._build_receipt(
+                runtime,
+                event_count=1,
+                effect_count=effect_count,
+                net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if keys == ["notify", "settlement"] else "fail",
+            )
+
+        if runtime.workload_id == "H-A4":
+            # Profile 0: redeliver the same logical effect after a restart boundary.
+            command = {
+                "command_key": "cmd_a_restart_retry",
+                "occurrence_id": "occ_a_restart_retry",
+                "alias": runtime.alias,
+                "amount": str(EFFECT_AMOUNT),
+            }
+            event_id = self._accept_command(runtime, service_runtime, command)
+            seq = self.store.connection.execute(
+                "SELECT seq FROM journal WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            if seq is None:
+                raise ToolError("event not in journal")
+            self._deliver_event(
+                runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=False
+            )
+            effect_count = self._effect_count_for_event_keys([event_id], ["settlement"])
+            return self._build_receipt(
+                runtime,
+                event_count=1,
+                effect_count=effect_count,
+                net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if effect_count == 1 else "fail",
+            )
+
+        if runtime.workload_id == "H-B3":
+            # Profile 1: same command occurrence with a different payload must not merge.
+            first = {
+                "command_key": "cmd_b_conflict",
+                "occurrence_id": "occ_b_conflict",
+                "alias": runtime.alias,
+                "amount": "100",
+            }
+            second = {
+                "command_key": "cmd_b_conflict",
+                "occurrence_id": "occ_b_conflict",
+                "alias": runtime.alias,
+                "amount": "101",
+            }
+            self._accept_command(runtime, service_runtime, first)
+            rejected = False
+            try:
+                self._accept_command(runtime, service_runtime, second)
+            except ToolError:
+                rejected = True
+            rows = self.store.connection.execute(
+                """
+                SELECT event_id, seq FROM journal
+                WHERE command_key = ? AND occurrence_id = ?
+                ORDER BY seq
+                """,
+                (first["command_key"], first["occurrence_id"]),
+            ).fetchall()
+            return self._build_receipt(
+                runtime,
+                event_count=len(rows),
+                effect_count=0,
+                net_effect_count=0,
+                # Pass if the conflicting payload did not create a second journal row.
+                # Explicit rejection is preferred but not required when idempotent s2
+                # returns the prior event id without merging payloads.
                 outcome="pass" if len(rows) == 1 else "fail",
+            )
+
+        if runtime.workload_id == "H-B4":
+            # Profile 1: same command key with distinct occurrences is legitimate.
+            commands = [
+                {
+                    "command_key": "cmd_b_legit_repeat",
+                    "occurrence_id": "occ_b_legit_first",
+                    "alias": runtime.alias,
+                    "amount": str(EFFECT_AMOUNT),
+                },
+                {
+                    "command_key": "cmd_b_legit_repeat",
+                    "occurrence_id": "occ_b_legit_second",
+                    "alias": runtime.alias,
+                    "amount": str(EFFECT_AMOUNT),
+                },
+            ]
+            event_ids = [self._accept_command(runtime, service_runtime, cmd) for cmd in commands]
+            rows = self.store.connection.execute(
+                """
+                SELECT event_id, seq FROM journal
+                WHERE command_key = ?
+                ORDER BY seq
+                """,
+                (commands[0]["command_key"],),
+            ).fetchall()
+            for event_id, sequence in rows:
+                self._deliver_event(
+                    runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
+                )
+            effect_count = self._effect_count_for_rows(rows)
+            return self._build_receipt(
+                runtime,
+                event_count=len(event_ids),
+                effect_count=effect_count,
+                net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if len(rows) == 2 and effect_count == 2 else "fail",
             )
 
         if runtime.workload_id == "H-S1":
@@ -750,7 +1014,6 @@ class RuntimeEngine:
                 },
             ]
             event_ids = [self._accept_command(runtime, service_runtime, cmd) for cmd in commands]
-            effect_count = 0
             for event_id in event_ids:
                 seq = self.store.connection.execute(
                     "SELECT seq FROM journal WHERE event_id = ?", (event_id,)
@@ -760,7 +1023,7 @@ class RuntimeEngine:
                 self._deliver_event(
                     runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=False
                 )
-                effect_count += 1
+            effect_count = self._effect_count_for_event_keys(event_ids, ["settlement"])
             return self._build_receipt(
                 runtime,
                 event_count=len(event_ids),
@@ -784,18 +1047,17 @@ class RuntimeEngine:
                 "SELECT event_id, seq FROM journal WHERE command_key = ? AND occurrence_id = ? ORDER BY seq",
                 (command["command_key"], command["occurrence_id"]),
             ).fetchall()
-            effect_count = 0
             for event_id, sequence in rows:
                 self._deliver_event(
                     runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
                 )
-                effect_count += 1
+            effect_count = self._effect_count_for_rows(rows)
             return self._build_receipt(
                 runtime,
                 event_count=len(rows),
                 effect_count=effect_count,
                 net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="pass" if len(rows) == 1 else "fail",
+                outcome="pass" if len(rows) == 1 and effect_count == 1 else "fail",
             )
 
         if runtime.workload_id == "H-TRANS":
@@ -815,12 +1077,59 @@ class RuntimeEngine:
             self._deliver_event(
                 runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=True
             )
+            effect_count = self._effect_count_for_event_keys([event_id], ["settlement"])
             return self._build_receipt(
                 runtime,
                 event_count=1,
-                effect_count=1,
-                net_effect_count=EFFECT_AMOUNT,
-                outcome="pass",
+                effect_count=effect_count,
+                net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if effect_count == 1 else "fail",
+            )
+
+        if runtime.workload_id == "H-S3":
+            # Shared: deterministic interleaved redelivery of the same occurrence.
+            command = {
+                "command_key": "cmd_s_interleaved",
+                "occurrence_id": "occ_s_interleaved",
+                "alias": runtime.alias,
+                "amount": str(EFFECT_AMOUNT),
+            }
+            first_event_id = self._accept_command(runtime, service_runtime, command)
+            runtime.restart()
+            self._accept_command(runtime, service_runtime, command)
+            rows = self.store.connection.execute(
+                """
+                SELECT event_id, seq FROM journal
+                WHERE command_key = ? AND occurrence_id = ?
+                ORDER BY seq
+                """,
+                (command["command_key"], command["occurrence_id"]),
+            ).fetchall()
+            if rows:
+                self._deliver_event(
+                    runtime,
+                    service_runtime,
+                    first_event_id,
+                    rows[0][1],
+                    attempt_budget,
+                    retry_on_transient=False,
+                )
+                runtime.restart()
+                self._deliver_event(
+                    runtime,
+                    service_runtime,
+                    first_event_id,
+                    rows[0][1],
+                    attempt_budget,
+                    retry_on_transient=False,
+                )
+            effect_count = self._effect_count_for_rows(rows)
+            return self._build_receipt(
+                runtime,
+                event_count=len(rows),
+                effect_count=effect_count,
+                net_effect_count=effect_count * EFFECT_AMOUNT,
+                outcome="pass" if len(rows) == 1 and effect_count == 1 else "fail",
             )
 
         raise ToolError(f"unsupported hidden workload {runtime.workload_id}")
@@ -829,11 +1138,27 @@ class RuntimeEngine:
         if not rows:
             return 0
         event_ids = [event_id for event_id, _ in rows]
+        return self._effect_count_for_event_keys(event_ids, None)
+
+    def _effect_count_for_event_keys(
+        self, event_ids: list[str], logical_effect_keys: list[str] | None
+    ) -> int:
+        if not event_ids:
+            return 0
         placeholders = ",".join("?" for _ in event_ids)
+        params: list[Any] = list(event_ids)
+        key_clause = ""
+        if logical_effect_keys is not None:
+            key_placeholders = ",".join("?" for _ in logical_effect_keys)
+            key_clause = f" AND logical_effect_key IN ({key_placeholders})"
+            params.extend(logical_effect_keys)
         return int(
             self.store.connection.execute(
-                f"SELECT COUNT(*) FROM effects WHERE source_event_id IN ({placeholders})",
-                event_ids,
+                f"""
+                SELECT COUNT(*) FROM effects
+                WHERE source_event_id IN ({placeholders}){key_clause}
+                """,
+                params,
             ).fetchone()[0]
         )
 

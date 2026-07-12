@@ -143,6 +143,14 @@ class ToolGateway:
     def __enter__(self) -> ToolClient:
         self.session_dir.parent.mkdir(parents=True, exist_ok=True)
         self.fixture_dir.parent.mkdir(parents=True, exist_ok=True)
+        if self.session_dir.exists():
+            import shutil
+
+            shutil.rmtree(self.session_dir)
+        if self.fixture_dir.exists():
+            import shutil
+
+            shutil.rmtree(self.fixture_dir)
         config = {
             "profile": self.profile,
             "session_dir": str(self.session_dir),

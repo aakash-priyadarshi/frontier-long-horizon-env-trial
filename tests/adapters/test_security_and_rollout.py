@@ -34,8 +34,9 @@ def test_protocol_session_blocks_unknown_tool() -> None:
 
 
 def test_scripted_rollout_closes_incident() -> None:
-    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=16)
+    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=64)
     assert result.success is True
+    assert result.strict_score == 1.0
     status = result.final_observation["status"]
     assert status["incident"] == "closed"
     assert status["public_canary"] == "pass"

@@ -266,8 +266,9 @@ def _seed_history(store: StateStore, profile: int) -> None:
         store.connection.executemany(
             """
             INSERT INTO effects(
-                effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
-            ) VALUES (?, ?, 100, 'settlement', ?, ?)
+                effect_id, occurrence_id, amount, kind, logical_effect_key,
+                source_event_id, committed_tick
+            ) VALUES (?, ?, 100, 'settlement', 'settlement', ?, ?)
             """,
             (
                 (_EFFECT_PRIMARY, _OCCURRENCE, _EVENT_PRIMARY, 42),
@@ -297,8 +298,9 @@ def _seed_history(store: StateStore, profile: int) -> None:
         store.connection.executemany(
             """
             INSERT INTO effects(
-                effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
-            ) VALUES (?, ?, 100, 'settlement', ?, ?)
+                effect_id, occurrence_id, amount, kind, logical_effect_key,
+                source_event_id, committed_tick
+            ) VALUES (?, ?, 100, 'settlement', 'settlement', ?, ?)
             """,
             (
                 (_EFFECT_PRIMARY, _OCCURRENCE, _EVENT_PRIMARY, 42),
@@ -321,6 +323,8 @@ def build_fixture(
     profile: int,
     authority: RecoveryAuthority,
 ) -> ServiceFixture:
+    if root.exists():
+        shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=False)
     workspace = root / "workspace"
     _copy_workspace(workspace)

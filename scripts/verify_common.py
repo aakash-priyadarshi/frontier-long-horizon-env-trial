@@ -61,7 +61,7 @@ def _git_object_type(repo: Path, sha: str) -> str | None:
 
 
 def _resolve_to_full_sha(repo: Path, value: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{7,40}", value, re.IGNORECASE):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value, re.IGNORECASE):
         raise ValueError(f"malformed source commit: {value!r}")
     obj_type = _git_object_type(repo, value)
     if obj_type is None:

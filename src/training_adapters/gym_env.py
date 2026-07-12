@@ -6,12 +6,11 @@ import json
 from typing import Any, SupportsFloat
 
 from training_ground.loader import load_environment
-from training_ground.protocol import EnvironmentError
 
 try:
     import gymnasium as gym
     from gymnasium import spaces
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover
     gym = None  # type: ignore[assignment]
     spaces = None  # type: ignore[assignment]
 
@@ -52,23 +51,39 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
             work_dir=work_dir,
         )
         self._closed = True
+        # Use Sequence spaces that accept arbitrary UTF-8 JSON strings.
+        # Text spaces in some Gymnasium versions reject long/unicode content.
         self.action_space = spaces.Dict(
             {
                 "tool": spaces.Text(min_length=1, max_length=64),
-                "arguments_json": spaces.Text(min_length=2, max_length=8_000),
+                "arguments_json": spaces.Sequence(spaces.Discrete(256)),
             }
         )
         self.observation_space = spaces.Dict(
             {
-                "status_json": spaces.Text(min_length=2, max_length=50_000),
+                "status_json": spaces.Sequence(spaces.Discrete(256)),
                 "last_ok": spaces.Discrete(2),
             }
         )
 
+    @staticmethod
+    def _encode_text(value: str) -> tuple[int, ...]:
+        # Gymnasium Sequence.contains requires a tuple of ints, not a list.
+        return tuple(value.encode("utf-8"))
+
+    @staticmethod
+    def _decode_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode("utf-8")
+        return bytes(int(x) for x in value).decode("utf-8")
+
     def _encode_obs(self, status: dict[str, Any]) -> dict[str, Any]:
         last_ok = 0 if "error" in status else 1
+        payload = json.dumps(status, sort_keys=True, ensure_ascii=True)
         return {
-            "status_json": json.dumps(status, sort_keys=True, ensure_ascii=True),
+            "status_json": self._encode_text(payload),
             "last_ok": last_ok,
         }
 
@@ -78,7 +93,18 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
         _require_gym()
         super().reset(seed=seed)
         self.close()
+        options = dict(options or {})
+        options.setdefault("profile", self.profile)
+        options.setdefault("max_steps", self.max_steps)
         seed = seed if seed is not None else self.seed
+        # Rebuild core when seed changes so reset(seed=) reshuffles the episode.
+        if seed != self._core.manifest.seed or options.get("profile") != self._core.manifest.profile:
+            self._core = load_environment(
+                split=self.split,
+                seed=seed,
+                options=options,
+                work_dir=self.work_dir,
+            )
         obs, info = self._core.reset(seed=seed, options=options)
         self._closed = False
         info["allowed_tools"] = info.get("allowed_tools", [])
@@ -90,15 +116,16 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
         if self._closed:
             raise RuntimeError("environment is not reset")
         tool = str(action.get("tool", ""))
-        raw_args = action.get("arguments_json", "{}")
+        raw_args = action.get("arguments_json", self._encode_text("{}"))
         try:
-            arguments = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            args_text = self._decode_text(raw_args)
+            arguments = json.loads(args_text)
             if not isinstance(arguments, dict):
                 raise ValueError("arguments_json must be a JSON object")
             core_action = {"tool": tool, "arguments": arguments}
             obs, reward, terminated, truncated, info = self._core.step(core_action)
             return self._encode_obs(obs), float(reward), terminated, truncated, info
-        except (json.JSONDecodeError, ValueError) as exc:
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as exc:
             obs = self._core._last_status or {
                 "error": str(exc),
                 "incident": "open",

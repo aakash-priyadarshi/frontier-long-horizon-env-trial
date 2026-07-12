@@ -24,7 +24,7 @@ def main() -> int:
     except ToolFilterError:
         pass
 
-    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=16)
+    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=64)
     payload = result.to_dict()
     print(json.dumps({"success": result.success, "steps": len(result.steps), "tools": list(ALLOWED_TOOLS)}, indent=2))
     if not result.success:

@@ -24,17 +24,28 @@ ALLOWED_TOOLS: tuple[str, ...] = (
     "recovery.resume",
 )
 
+_ALLOWED_ACTION_KEYS = frozenset({"tool", "arguments"})
+
 
 def validate_action(action: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Validate the action shape and return the normalized tool/arguments."""
     if not isinstance(action, dict):
         raise EnvironmentError("action must be a dict", code="invalid_action")
+    extra = set(action.keys()) - _ALLOWED_ACTION_KEYS
+    if extra:
+        raise EnvironmentError(
+            f"action contains unsupported fields: {sorted(extra)}",
+            code="invalid_action",
+        )
     tool = action.get("tool")
     if not isinstance(tool, str):
         raise EnvironmentError("action must contain a string 'tool' field", code="invalid_action")
     if tool not in ALLOWED_TOOLS:
         raise EnvironmentError(f"tool {tool!r} is not in the allowed inventory", code="unknown_tool")
-    arguments = action.get("arguments") or {}
+    if "arguments" not in action:
+        arguments: Any = {}
+    else:
+        arguments = action["arguments"]
     if not isinstance(arguments, dict):
         raise EnvironmentError("action 'arguments' must be a dict", code="invalid_arguments")
     return tool, arguments

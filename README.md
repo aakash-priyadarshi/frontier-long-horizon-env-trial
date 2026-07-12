@@ -1,17 +1,15 @@
 # Frontier Long-Horizon Environment Trial
 
 An original research and implementation trial for a deterministic, long-horizon
-coding-agent environment. The current build is intentionally limited to the first
-approved implementation milestone: a paired incident-service substrate with matched
-public artifacts and distinct privileged histories.
+coding-agent environment built around paired incident recovery with matched public
+artifacts and distinct privileged histories.
 
 ## Current status
 
-**Final integrated build. The environment now provides a canonical `training_ground`
-core, a strict `strict_verifier` grader, APEX-SWE integration adapters, and
-reconciled Gymnasium/APEX wrappers. All 84 targeted tests and the final
-verification script pass and produce a machine-readable receipt at
-`evidence/final-environment.json`.**
+**Final remediation is implemented in this worktree and is awaiting post-fix
+independent audit. This is not a submission-readiness claim.** The environment now
+provides a canonical `training_ground` core, a strict `strict_verifier` grader,
+Gymnasium adapters, and APEX-SWE task-pack/side-car smoke compatibility.
 
 The repository currently provides:
 
@@ -30,17 +28,20 @@ The repository currently provides:
 - `src/training_ground/` — the canonical Gymnasium-compatible environment core
   with protocol, actions, observations, episodes, manifests, and CLI;
 - `src/strict_verifier/` — deterministic ground-truth verifier, predicates,
-  hidden workloads, reward ladder, and receipts;
-- `src/training_adapters/` — Gymnasium env and APEX result shaping that wrap
+  authenticated transcript checks, durable hidden workloads, reward ladder, and
+  receipts;
+- `src/training_adapters/` — Gymnasium env and APEX task-pack result shaping that wrap
   `training_ground`;
-- `src/integrations/apex_swe/` — APEX-SWE task harness over `training_ground`;
+- `src/integrations/apex_swe/` — APEX-SWE task pack and local side-car smoke over
+  `training_ground`;
 - `tests/final_core/`, `tests/soundness/`, `tests/controls/`, and
-  `tests/integrations/` — final-core, soundness, control, and integration tests.
+  `tests/final_audit/` — final-core, soundness, control, and audit regression tests.
 
-Training/APEX interoperability adapters live under `src/training_adapters/` and
-`src/integrations/apex_swe/` (see `docs/training-adapters.md`). They wrap the
-`training_ground` core for Gymnasium rollouts and APEX-SWE task packaging without
-changing the hidden verifier or evidence receipts.
+Training/APEX-facing adapters live under `src/training_adapters/` and
+`src/integrations/apex_swe/` (see `docs/training-adapters.md`). Gymnasium is checked
+with `gymnasium.utils.env_checker.check_env`. APEX is **task-pack compatibility plus
+side-car smoke only**; real upstream `apx run` and model-driven harness execution
+are **NOT VERIFIED**.
 
 ## Repository layout
 
@@ -78,9 +79,11 @@ Regenerate the final machine-readable receipt from fresh live runs:
 .\.venv\Scripts\python.exe scripts\verify_final_environment.py --output evidence\final-environment.json
 ```
 
-The `verify_final_environment.py` entrypoint runs pytest, runs `training_ground`
-scripted trajectories on `dev` and `eval` instances, lists public instance IDs,
-validates the Gymnasium adapter, and writes `evidence/final-environment.json`.
+The `verify_final_environment.py` entrypoint validates source-commit binding, runs
+pytest suites including `tests/final_audit`, runs `training_ground` scripted
+trajectories on `dev` and `eval` instances, lists public instance IDs, validates the
+Gymnasium adapter, records gold-family/control/reward snapshots, and writes
+`evidence/final-environment.json`.
 Additional scripts:
 
 ```powershell
@@ -89,13 +92,16 @@ Additional scripts:
 .\.venv\Scripts\python.exe -m training_ground.cli list-instances --split eval --count 5
 ```
 
+Docker execution is **NOT VERIFIED** unless a Docker daemon is available and the
+daemon-backed smoke/probe has completed.
+
 ## Security boundary
 
-Snapshot and recovery authenticity use HMAC-SHA256 with a capability supplied by
-privileged fixture-building code. The key is not stored in SQLite, public workspace
-files, status output, logs, canonical roots, or evidence receipts. Authentication
-binds the snapshot identity, state payload and root, creation tick, fixture scope,
-and recovery transition provenance.
+Snapshot, recovery, and transcript authenticity use HMAC-SHA256 capabilities
+supplied by privileged fixture-building code. Keys are not stored in SQLite, public
+workspace files, status output, logs, canonical roots, or evidence receipts.
+Authentication binds snapshot identity, state payload and root, creation tick,
+fixture scope, recovery transition provenance, and episode transcript chains.
 
 This is local privileged authentication, not production OS, process, container, or
 deployment isolation. The future agent-mount boundary is **NOT VERIFIED**. Privileged
@@ -111,5 +117,4 @@ The implemented root boundaries are documented in
 - Claims must be supported by reproducible evidence.
 - The public workspace must not disclose its privileged fixture selection.
 - Implementation work advances only through reviewed milestones.
-- Milestone 2 is closed after verification and evidence regeneration; later
-  milestones are not begun automatically.
+- Final remediation is awaiting post-fix audit; later work is not begun automatically.

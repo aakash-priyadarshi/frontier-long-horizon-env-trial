@@ -17,18 +17,24 @@ from training_adapters.rollout import ScriptedRecoveryPolicy, run_rollout  # noq
 
 
 def main() -> int:
-    # Prefer an existing scripted receipt when the agent already ran.
-    log_dir = Path(os.environ.get("FRONTIER_ADAPTER_OUT", os.environ.get("APEX_CONTAINER_LOGS_PATH", ".")))
+    log_dir = Path(
+        os.environ.get(
+            "FRONTIER_ADAPTER_OUT",
+            os.environ.get("APEX_CONTAINER_LOGS_PATH", "."),
+        )
+    )
     verdict = log_dir / "smoke_verdict.txt"
     if verdict.is_file():
         text = verdict.read_text(encoding="utf-8")
         print(text, end="")
         return 0 if "PASSED" in text else 1
 
-    # Otherwise execute the scripted public recovery path in-process.
-    result = run_rollout(profile=0, policy=ScriptedRecoveryPolicy(), max_steps=16)
-    print(format_apex_test_stdout(result.success), end="")
-    return 0 if result.success else 1
+    result = run_rollout(
+        profile=0, policy=ScriptedRecoveryPolicy(), max_steps=64, require_strict=True
+    )
+    success = bool(result.success and result.strict_score == 1.0)
+    print(format_apex_test_stdout(success), end="")
+    return 0 if success else 1
 
 
 if __name__ == "__main__":

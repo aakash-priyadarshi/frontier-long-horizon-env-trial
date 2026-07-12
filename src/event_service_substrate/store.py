@@ -60,6 +60,7 @@ CREATE TABLE effects (
     occurrence_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
     kind TEXT NOT NULL,
+    logical_effect_key TEXT NOT NULL DEFAULT 'settlement',
     source_event_id TEXT NOT NULL,
     committed_tick INTEGER NOT NULL
 );
@@ -67,13 +68,19 @@ CREATE TABLE effects (
 CREATE TABLE intents (
     intent_id TEXT PRIMARY KEY,
     source_event_id TEXT NOT NULL,
+    command_key TEXT NOT NULL,
     occurrence_id TEXT NOT NULL,
-    state TEXT NOT NULL
+    logical_effect_key TEXT NOT NULL,
+    created_tick INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    effect_id TEXT
 );
 
 CREATE TABLE event_marks (
-    event_id TEXT PRIMARY KEY,
-    mark_state TEXT NOT NULL
+    event_id TEXT NOT NULL,
+    mark_key TEXT NOT NULL,
+    mark_state TEXT NOT NULL,
+    PRIMARY KEY (event_id, mark_key)
 );
 
 CREATE TABLE command_keys (

@@ -49,7 +49,12 @@ def _fresh_engine(root: Path, profile: int, attempt_budget: int = 3) -> RuntimeE
 
 
 def test_public_workloads_pass_with_idempotent_flow(fixture_root: Path) -> None:
+    from training_ground.policies import LOGICAL_IDENTITY_FLOW
+
     engine = _fresh_engine(fixture_root, 0)
+    (engine.active_workspace / "service" / "flow.py").write_text(
+        LOGICAL_IDENTITY_FLOW, encoding="utf-8"
+    )
     for wl in ("P1", "P2", "P3"):
         receipt = engine.run(wl)
         assert receipt["outcome"] == "pass", receipt

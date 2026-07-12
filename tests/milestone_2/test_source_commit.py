@@ -137,11 +137,11 @@ def test_m1_allowed_receipts_restricted(repo) -> None:
         verify_common.validate_source_commit(root, source_sha, allowed)
 
 
-def test_short_sha_resolves_to_full(repo, source_sha) -> None:
+def test_short_sha_rejected(repo, source_sha) -> None:
     root, verify_common = repo
     short_sha = source_sha[:12]
-    resolved = verify_common.validate_source_commit(root, short_sha, _allowed())
-    assert resolved == source_sha
+    with pytest.raises(ValueError, match="malformed source commit"):
+        verify_common.validate_source_commit(root, short_sha, _allowed())
 
 
 _allowed = lambda: (

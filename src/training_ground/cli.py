@@ -8,58 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .authority import authority_for_profile
-from .episode import IncidentEnv
 from .loader import load_environment
-from .manifests import build_manifest, list_instance_ids
-
-
-def _default_scripted_policy() -> list[dict[str, Any]]:
-    """A valid, pair-blind reference repair policy.
-
-    It collects diagnostic evidence, restores the authenticated snapshot,
-    edits the candidate, deploys, runs the public workloads, and resumes.
-    """
-    idempotent_flow = """from __future__ import annotations
-
-def s1(command, store): return store.prepare(command)
-
-def s2(command, store):
-    existing = store.get_event_id(command.get("command_key"), command.get("occurrence_id"))
-    return existing if existing else store.append(command)
-
-def s3(command, event_id, store): store.register(command, event_id)
-
-def s4(event_id, store): return store.load(event_id)
-
-def s5(event, store):
-    existing = store.effect_exists(event["event_id"])
-    return existing if existing else store.settle(event)
-
-def s6(sequence, store): store.advance(sequence)
-"""
-    settings = """[service]
-intake_enabled = true
-settlement_enabled = true
-attempt_budget = 3
-transient_behavior = "retry"
-"""
-    return [
-        {"tool": "telemetry.logs", "arguments": {"alias": "Q-41"}},
-        {"tool": "state.inspect", "arguments": {"source": "public", "selector": {"stream": "settlement"}, "view": "progress"}},
-        {"tool": "recovery.pause", "arguments": {}},
-        {"tool": "recovery.restore", "arguments": {"snapshot_id": "S0"}},
-        {"tool": "workspace.read", "arguments": {"path": "service/flow.py"}},
-        {"tool": "workspace.read", "arguments": {"path": "service/settings.toml"}},
-        {"tool": "workspace.edit", "arguments": {"path": "service/flow.py", "content": idempotent_flow}},
-        {"tool": "workspace.edit", "arguments": {"path": "service/settings.toml", "content": settings}},
-        {"tool": "release.deploy", "arguments": {}},
-        {"tool": "runtime.run", "arguments": {"workload_id": "P1"}},
-        {"tool": "runtime.run", "arguments": {"workload_id": "P2"}},
-        {"tool": "runtime.run", "arguments": {"workload_id": "P3"}},
-        {"tool": "recovery.resume", "arguments": {}},
-        {"tool": "release.status", "arguments": {}},
-    ]
+from .manifests import list_instance_ids
+from .policies import valid_repair_policy
 
 
 def _cmd_list_instances(args: argparse.Namespace) -> int:
@@ -71,8 +22,7 @@ def _cmd_list_instances(args: argparse.Namespace) -> int:
 def _cmd_run_scripted(args: argparse.Namespace) -> int:
     env = load_environment(args.split, args.seed, options={"max_steps": args.max_steps})
     obs, info = env.reset()
-    policy = _default_scripted_policy()
-    for action in policy:
+    for action in valid_repair_policy():
         obs, reward, terminated, truncated, info = env.step(action)
         if terminated or truncated:
             break
@@ -84,11 +34,14 @@ def _cmd_run_scripted(args: argparse.Namespace) -> int:
         Path(args.transcript).write_text(
             json.dumps(transcript, indent=2, sort_keys=True), encoding="utf-8"
         )
-    return 0
+    return 0 if grade.get("score") == 1.0 else 1
 
 
 def _cmd_grade_transcript(args: argparse.Namespace) -> int:
-    print("grade-transcript requires a fixture/session; not implemented in standalone CLI", file=sys.stderr)
+    print(
+        "grade-transcript requires a fixture/session; not implemented in standalone CLI",
+        file=sys.stderr,
+    )
     return 1
 
 

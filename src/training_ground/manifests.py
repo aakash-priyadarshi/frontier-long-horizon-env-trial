@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from .authority import profile_for_seed
 from .limits import Limits
 from .protocol import ENVIRONMENT_VERSION, MANIFEST_SCHEMA_VERSION
 
@@ -53,8 +54,7 @@ def build_manifest(split: str, seed: int) -> Manifest:
     public_task_digest = "task-" + hashlib.sha256(
         f"Q-41-{split}-{effective_seed}".encode("utf-8")
     ).hexdigest()[:32]
-    # profile is derived from the seed but never exposed in the public manifest
-    profile = int(hashlib.sha256(f"profile-{effective_seed}".encode("utf-8")).hexdigest(), 16) % 2
+    profile = profile_for_seed(split, effective_seed)
     return Manifest(
         instance_id=instance_id,
         split=split,

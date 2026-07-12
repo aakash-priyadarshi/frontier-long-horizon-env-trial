@@ -27,13 +27,13 @@ proceeds only through explicitly approved milestones.
 
 ## Current stage
 
-**Current stage: Milestone 2 closed. The interaction-layer implementation, audit
-findings, and remaining targeted gaps are verified and evidence receipts are
-regenerated.**
+**Current stage: final remediation implemented. Audit falsifications have targeted
+fixes and regression coverage in this worktree; the branch is awaiting post-fix
+independent audit and has no submission-readiness claim.**
 
 ### Allowed
 
-- Milestone 2 maintenance, regression checks, and evidence regeneration.
+- Final remediation maintenance, regression checks, and evidence regeneration.
 - Reproduce Milestone 1 verification as a regression baseline.
 
 ### Not allowed yet
