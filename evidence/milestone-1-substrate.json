@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "milestone": "milestone-1-substrate",
-  "git_sha": null,
-  "git_sha_status": "not-a-git-repository",
+  "git_sha": "5f14840dceb8bee95063bbbdb755fe4133ae999d",
+  "git_sha_status": "tested-source-commit",
   "python_version": "3.12.13",
   "test": {
     "command": ".\\.venv\\Scripts\\python.exe -m pytest tests\\milestone_1 -q",
@@ -60,5 +60,5 @@
     "receipt_privileged_causal_values_absent": true,
     "passed": true
   },
-  "timestamp": "2026-07-12T03:26:05.812Z"
+  "timestamp": "2026-07-12T03:33:02.381Z"
 }
