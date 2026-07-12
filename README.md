@@ -8,8 +8,10 @@ public artifacts and distinct privileged histories.
 ## Current status
 
 **Milestone 1 closed after targeted re-audit. Milestone 2 interaction-layer
-implementation is explicitly approved and currently in audit-remediation.
-Confirmed fixes (C1, M1-M5) and related non-blocking findings are being applied.**
+implementation is closed: the audit findings C1, M1-M5 and the remaining
+targeted gaps (trace capability authority, source-commit binding, gateway error
+codes, fixed tool dispatch, and deterministic evidence) are implemented and
+verified.**
 
 The repository currently provides:
 
@@ -20,6 +22,8 @@ The repository currently provides:
 - byte-identical neutral public workspaces for both fixtures;
 - shared `r0` and `r1` revision history plus a candidate placeholder;
 - locally HMAC-authenticated `S0` restoration with authenticated recovery provenance;
+- HMAC-secured, epoch-bound trace capability tokens that bind each session, run,
+  selector, and view and are invalidated on state transitions;
 - a process-separated JSON tool gateway that is the evaluated agent's only
   supported interface (the privileged controller owns the fixture, session, and
   runtime; the evaluated side speaks JSON-lines over stdin/stdout);
@@ -67,12 +71,15 @@ Regenerate the machine-readable receipts from fresh live runs:
 .\.venv\Scripts\python.exe scripts\verify_milestone_2.py
 ```
 
-The `verify_milestone_2.py` entrypoint runs the full `pytest tests` baseline and
-then performs a live agent-surface run through the process-separated JSON gateway.
-It stops if pytest or any live root, equality, authentication, recovery, or leak
-check fails. On success it writes `evidence/milestone-2-interaction-layer.json`.
-`verify_milestone_2.py` accepts `--source-commit` to bind the receipt to the
-implementation commit when the receipt is committed at repository tip.
+The `verify_milestone_2.py` entrypoint runs `pytest tests/milestone_1` and
+`pytest tests/milestone_2` separately, then performs a live agent-surface run
+through the process-separated JSON gateway. It stops if pytest or any live root,
+equality, authentication, recovery, leak, or capability check fails. On success it
+writes `evidence/milestone-2-interaction-layer.json` with the source commit SHA,
+per-milestone test counts, and a total count.
+`verify_milestone_1.py` and `verify_milestone_2.py` accept `--source-commit` to
+bind the receipt to the implementation commit when the receipt is committed at
+repository tip.
 
 ## Security boundary
 

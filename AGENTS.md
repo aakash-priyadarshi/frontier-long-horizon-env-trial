@@ -27,16 +27,18 @@ proceeds only through explicitly approved milestones.
 
 ## Current stage
 
-**Current stage: Milestone 2 audit remediation (PASS WITH FIXES). Implementing confirmed fixes for C1, M1-M5, and related non-blocking findings.**
+**Current stage: Milestone 2 closed. The interaction-layer implementation, audit
+findings, and remaining targeted gaps are verified and evidence receipts are
+regenerated.**
 
 ### Allowed
 
-- Milestone 2 agent-visible interaction-layer implementation within the approved scope.
-- Focused Milestone 2 tests and receipts.
+- Milestone 2 maintenance, regression checks, and evidence regeneration.
 - Reproduce Milestone 1 verification as a regression baseline.
 
 ### Not allowed yet
 
+- Any new implementation milestones without explicit user approval.
 - Hidden verifier implementation beyond what Milestone 2 explicitly requires.
 - Model evaluation.
 - Unsupported isolation or performance claims.
