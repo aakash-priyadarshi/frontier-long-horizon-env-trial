@@ -1,0 +1,580 @@
+"""Agent-facing session and bounded tool implementation."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Any, Final
+
+import tomllib
+
+from event_service_substrate.canonical import canonical_json, digest, tree_root
+from event_service_substrate.instance import CODE_FILES, CONFIG_FILE, ServiceFixture
+from event_service_substrate.store import StateStore
+
+from .errors import ToolError
+from .runtime import RuntimeEngine
+
+WORKSPACE_SUBDIR: Final[str] = "service"
+MAX_LOG_LINES: Final[int] = 100
+MAX_TRACE_SPANS: Final[int] = 100
+MAX_INSPECT_ROWS: Final[int] = 10
+
+VIEWS: Final[set[str]] = {"journal", "effects", "keys", "progress", "recovery"}
+
+
+class AgentSession:
+    """A bounded agent-facing session over a deterministic service fixture.
+
+    The session directory contains only agent-visible workspace material and
+    session-safe metadata. The privileged fixture package source, fixture
+    database, authority keys, and member selector live outside the session.
+    """
+
+    def __init__(
+        self,
+        fixture: ServiceFixture,
+        profile: int,
+        session_dir: Path,
+    ) -> None:
+        self._fixture = fixture
+        self._profile = profile
+        self._store = fixture.store
+        self.session_dir = session_dir
+        self.active_workspace = session_dir / "active"
+        self.candidate_workspace = session_dir / "candidate"
+        self.initial_workspace = session_dir / "initial"
+        self.metadata_path = session_dir / "metadata.json"
+        self._workload_history: list[dict[str, Any]] = []
+        self._public_workload_pass: set[str] = set()
+        self._closed = False
+
+        session_dir.mkdir(parents=True, exist_ok=False)
+        self._copy_workspace(fixture.workspace, self.active_workspace)
+        self._copy_workspace(fixture.workspace, self.candidate_workspace)
+        self._copy_workspace(fixture.workspace, self.initial_workspace)
+
+        self.session_id = "session_" + digest(
+            "session-v1",
+            canonical_json(
+                {
+                    "tick": self._store.tick(),
+                    "active_root": self._workspace_root(self.active_workspace),
+                }
+            ),
+        )[:24]
+        self._write_metadata()
+        self._seed_initial_trace()
+        self._store.connection.commit()
+
+    def close(self) -> None:
+        if not self._closed:
+            self._fixture.close()
+            self._closed = True
+
+    def __enter__(self) -> "AgentSession":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def _copy_workspace(self, source: Path, destination: Path) -> None:
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(
+            source,
+            destination,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        )
+
+    def _write_metadata(self) -> None:
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "session_id": self.session_id,
+                    "tick": self._store.tick(),
+                    "active_revision": self._active_revision_label(),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    def _active_revision_label(self) -> str:
+        row = self._store.rows(
+            "SELECT revision FROM deployments WHERE status = 'active'"
+        )
+        if len(row) != 1:
+            raise ToolError("active revision is not unique")
+        return str(row[0][0])
+
+    def _workspace_root(self, workspace: Path) -> str:
+        return tree_root(workspace, CODE_FILES)
+
+    def _config_root(self, config_bytes: bytes) -> str:
+        return digest("config-v1", config_bytes)
+
+    def _active_settings_bytes(self) -> bytes:
+        return (self.active_workspace / CONFIG_FILE).read_bytes()
+
+    def _candidate_settings_bytes(self) -> bytes:
+        return (self.candidate_workspace / CONFIG_FILE).read_bytes()
+
+    def _active_config_root(self) -> str:
+        return self._config_root(self._active_settings_bytes())
+
+    def _candidate_config_root(self) -> str:
+        return self._config_root(self._candidate_settings_bytes())
+
+    def _active_source_root(self) -> str:
+        return self._workspace_root(self.active_workspace)
+
+    def _candidate_root(self) -> str:
+        return self._workspace_root(self.candidate_workspace)
+
+    def _attempt_budget(self) -> int:
+        parsed = tomllib.loads(self._active_settings_bytes().decode("utf-8"))
+        return int(parsed["service"]["attempt_budget"])
+
+    def _revision_artifact(self, revision: str) -> tuple[str, bytes]:
+        row = self._store.rows(
+            "SELECT code_root, config_root, config_bytes FROM deployments WHERE revision = ?",
+            (revision,),
+        )
+        if len(row) != 1:
+            raise ToolError(f"unknown revision {revision}")
+        code_root, config_root, config_bytes = row[0]
+        if self._config_root(config_bytes.encode("utf-8")) != config_root:
+            raise ToolError(f"revision {revision} config root mismatch")
+        return str(code_root), config_bytes.encode("utf-8")
+
+    def _require_intake_paused(self) -> None:
+        if self._store.runtime_value("intake_state") != "paused":
+            raise ToolError("intake must be paused")
+
+    def _resolve_path(self, workspace: Path, path: str) -> Path:
+        target = (workspace / path).resolve()
+        if not str(target).startswith(str(workspace.resolve())):
+            raise ToolError("path outside workspace")
+        return target
+
+    def _seed_initial_trace(self) -> None:
+        handle = self._initial_handle()
+        # A single neutral span for the pre-session incident log stream.
+        self._store.append_trace_span(
+            correlation_handle=handle,
+            span_id="span_" + digest("span-v1", b"initial")[:32],
+            parent_id=None,
+            workload_id="initial",
+            alias="Q-41",
+            stage="s6",
+            event_id=None,
+            command_key=None,
+            occurrence_id=None,
+            tick=self._store.tick(),
+        )
+
+    def _initial_handle(self) -> str:
+        return "h_" + digest(
+            "handle-v1",
+            canonical_json(
+                {"alias": "Q-41", "window": [41, 45], "source": "initial"}
+            ),
+        )[:32]
+
+    # ------------------------------------------------------------------
+    # Tool implementations
+    # ------------------------------------------------------------------
+
+    def release_status(self) -> dict[str, Any]:
+        """release.status: return release, workspace, and runtime status."""
+        public_canary_receipts = [
+            r
+            for r in self._workload_history
+            if r["workload_id"] in ("P1", "P2", "P3")
+        ]
+        all_public_pass = {"P1", "P2", "P3"} <= self._public_workload_pass
+        intake = self._store.runtime_value("intake_state")
+        incident = (
+            "closed"
+            if intake == "open" and all_public_pass
+            else "open"
+        )
+        return {
+            "session_id": self.session_id,
+            "tick": self._store.tick(),
+            "intake": intake,
+            "active_revision": self._active_revision_label(),
+            "active_source_root": self._active_source_root(),
+            "active_config_root": self._active_config_root(),
+            "candidate_root": self._candidate_root(),
+            "attempt_budget": self._attempt_budget(),
+            "public_canary": "pass" if all_public_pass else "green_once",
+            "incident": incident,
+            "public_canary_receipts": public_canary_receipts,
+            "tool_inventory": self.tool_inventory(),
+        }
+
+    def workspace_read(self, path: str) -> str:
+        """workspace.read: read one file from the active workspace."""
+        target = self._resolve_path(self.active_workspace, path)
+        if not target.is_file():
+            raise ToolError("file not found")
+        data = target.read_bytes()
+        if len(data) > 1_000_000:
+            raise ToolError("file too large")
+        return data.decode("utf-8", errors="replace")
+
+    def workspace_edit(self, path: str, content: str) -> dict[str, Any]:
+        """workspace.edit: write a file in the candidate workspace."""
+        target = self._resolve_path(self.candidate_workspace, path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return {
+            "path": path,
+            "candidate_root": self._candidate_root(),
+            "candidate_config_root": self._candidate_config_root(),
+        }
+
+    def telemetry_logs(
+        self, alias: str, window: tuple[int, int] | None = None
+    ) -> dict[str, Any]:
+        """telemetry.logs: return normalized logs and a correlation handle."""
+        if window is None:
+            bounds = self._store.connection.execute(
+                """
+                SELECT MIN(tick), MAX(tick) FROM telemetry
+                WHERE channel = 'public' AND message LIKE ?
+                """,
+                (f"%alias={alias}%",),
+            ).fetchone()
+            if bounds is None or bounds[0] is None:
+                raise ToolError("no public logs for alias")
+            start, end = int(bounds[0]), int(bounds[1]) + 1
+        else:
+            start, end = window
+        lines = [
+            row[0]
+            for row in self._store.rows(
+                """
+                SELECT message FROM telemetry
+                WHERE channel = 'public' AND tick >= ? AND tick <= ? AND message LIKE ?
+                ORDER BY seq
+                LIMIT ?
+                """,
+                (start, end, f"%alias={alias}%", MAX_LOG_LINES),
+            )
+        ]
+        handle = self._store.connection.execute(
+            """
+            SELECT correlation_handle, MIN(tick) as t
+            FROM trace_spans
+            WHERE alias = ? AND tick >= ? AND tick <= ?
+            GROUP BY correlation_handle
+            ORDER BY t
+            LIMIT 1
+            """,
+            (alias, start, end),
+        ).fetchone()
+        if handle is None:
+            raise ToolError("no trace handle for the requested alias and window")
+        return {
+            "alias": alias,
+            "window": [start, end],
+            "handle": handle[0],
+            "lines": lines,
+        }
+
+    def telemetry_trace(self, handle: str) -> dict[str, Any]:
+        """telemetry.trace: return bounded neutral spans for a handle."""
+        if not self._store.trace_handle_exists(handle):
+            raise ToolError("invalid trace handle")
+        rows = self._store.trace_spans_for_handle(handle)[:MAX_TRACE_SPANS]
+        spans = [
+            {
+                "span_id": row[1],
+                "parent_id": row[2],
+                "workload_id": row[3],
+                "alias": row[4],
+                "stage": row[5],
+                "event_id": row[6],
+                "command_key": row[7],
+                "occurrence_id": row[8],
+                "tick": row[9],
+            }
+            for row in rows
+        ]
+        return {
+            "handle": handle,
+            "spans": spans,
+            "selectors": self._store.trace_selectors_for_handle(handle),
+        }
+
+    def state_inspect(self, source: str, selector: dict[str, Any], view: str) -> dict[str, Any]:
+        """state.inspect: return a bounded state view for a selector."""
+        if view not in VIEWS:
+            raise ToolError("unknown view")
+        if source == "public":
+            return self._state_inspect_public(selector, view)
+        if not self._store.trace_handle_exists(source):
+            raise ToolError("invalid trace source")
+        if not self._selector_in_trace(source, selector):
+            raise ToolError("selector not found in trace")
+        return self._state_inspect_view(selector, view)
+
+    def _selector_in_trace(self, handle: str, selector: dict[str, Any]) -> bool:
+        for row in self._store.trace_selectors_for_handle(handle):
+            if all(
+                row.get(key) == value
+                for key, value in selector.items()
+                if value is not None
+            ):
+                return True
+        return False
+
+    def _state_inspect_public(self, selector: dict[str, Any], view: str) -> dict[str, Any]:
+        if view == "progress":
+            stream = selector.get("stream")
+            if stream != "settlement":
+                raise ToolError("invalid progress selector")
+            row = self._store.rows(
+                "SELECT stream, committed_seq FROM cursor WHERE stream = ?",
+                (stream,),
+            )[0]
+            return {"view": "progress", "rows": [{"stream": row[0], "committed_seq": row[1]}]}
+        if view == "recovery":
+            snapshot_id = selector.get("snapshot_id")
+            if not isinstance(snapshot_id, str):
+                raise ToolError("invalid recovery selector")
+            row = self._store.rows(
+                """
+                SELECT snapshot_id, state_root, cursor_seq, journal_root, effect_root, created_tick
+                FROM recovery_snapshots WHERE snapshot_id = ?
+                """,
+                (snapshot_id,),
+            )
+            if not row:
+                raise ToolError("snapshot not found")
+            return {
+                "view": "recovery",
+                "rows": [
+                    {
+                        "snapshot_id": row[0][0],
+                        "state_root": row[0][1],
+                        "cursor_seq": row[0][2],
+                        "journal_root": row[0][3],
+                        "effect_root": row[0][4],
+                        "created_tick": row[0][5],
+                        "authenticated": self._store.snapshot_is_valid(snapshot_id),
+                    }
+                ],
+            }
+        raise ToolError("public stream not supported for this view")
+
+    def _state_inspect_view(self, selector: dict[str, Any], view: str) -> dict[str, Any]:
+        event_id = selector.get("event_id")
+        command_key = selector.get("command_key")
+        occurrence_id = selector.get("occurrence_id")
+        rows: list[Any] = []
+        if view == "journal":
+            if not isinstance(event_id, str):
+                raise ToolError("journal view requires event_id selector")
+            rows = self._store.rows(
+                """
+                SELECT seq, event_id, command_key, occurrence_id, payload_hash, accepted_tick
+                FROM journal WHERE event_id = ?
+                """,
+                (event_id,),
+            )
+        elif view == "effects":
+            if not isinstance(event_id, str):
+                raise ToolError("effects view requires event_id selector")
+            rows = self._store.rows(
+                """
+                SELECT effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
+                FROM effects WHERE source_event_id = ?
+                ORDER BY committed_tick
+                LIMIT ?
+                """,
+                (event_id, MAX_INSPECT_ROWS),
+            )
+        elif view == "keys":
+            if not isinstance(command_key, str) or not isinstance(occurrence_id, str):
+                raise ToolError("keys view requires command_key and occurrence_id selectors")
+            rows = self._store.rows(
+                """
+                SELECT command_key, occurrence_id, event_id, state
+                FROM command_keys WHERE command_key = ? AND occurrence_id = ?
+                """,
+                (command_key, occurrence_id),
+            )
+        elif view == "progress":
+            stream = selector.get("stream", "settlement")
+            rows = self._store.rows(
+                "SELECT stream, committed_seq FROM cursor WHERE stream = ?",
+                (stream,),
+            )
+        elif view == "recovery":
+            snapshot_id = selector.get("snapshot_id")
+            if not isinstance(snapshot_id, str):
+                raise ToolError("recovery view requires snapshot_id selector")
+            rows = self._store.rows(
+                """
+                SELECT snapshot_id, state_root, cursor_seq, journal_root, effect_root, created_tick
+                FROM recovery_snapshots WHERE snapshot_id = ?
+                """,
+                (snapshot_id,),
+            )
+        return {"view": view, "selector": selector, "rows": [list(r) for r in rows[:MAX_INSPECT_ROWS]]}
+
+    def runtime_run(self, workload_id: str, cutpoint: str | None = None) -> dict[str, Any]:
+        """runtime.run: execute a deterministic public workload or diagnostic cutpoint."""
+        self._require_intake_paused()
+        run_id = len(self._workload_history)
+        engine = RuntimeEngine(self._store, self.active_workspace, self._profile)
+        receipt = engine.run(workload_id, cutpoint, run_id=run_id)
+        self._store.connection.commit()
+        self._workload_history.append(receipt)
+        if receipt["workload_id"] in ("P1", "P2", "P3") and receipt["outcome"] == "pass":
+            self._public_workload_pass.add(receipt["workload_id"])
+        return receipt
+
+    def recovery_pause(self) -> int:
+        """recovery.pause: pause intake and return the tick."""
+        return self._store.pause_intake()
+
+    def recovery_restore(self, snapshot_id: str = "S0") -> str:
+        """recovery.restore: restore an authenticated snapshot."""
+        self._require_intake_paused()
+        return self._store.restore_snapshot(snapshot_id)
+
+    def release_rollback(self, revision: str) -> dict[str, Any]:
+        """release.rollback: activate a known revision (r0 or r1)."""
+        self._require_intake_paused()
+        if revision not in ("r0", "r1"):
+            raise ToolError("rollback supports r0 or r1")
+        code_root, config_bytes = self._revision_artifact(revision)
+        self._copy_workspace(self.initial_workspace, self.active_workspace)
+        settings_path = self.active_workspace / CONFIG_FILE
+        settings_path.write_bytes(config_bytes)
+        with self._store.connection:
+            self._store.connection.execute(
+                "UPDATE deployments SET status = 'available'"
+            )
+            self._store.connection.execute(
+                """
+                UPDATE deployments SET status = 'active', activated_tick = ?
+                WHERE revision = ?
+                """,
+                (self._store.advance(), revision),
+            )
+        self._store.append_audit(
+            "deployment_rollback", self._store.deployment_root(), "operator", self._store.tick()
+        )
+        self._store.connection.commit()
+        self._write_metadata()
+        return {
+            "revision": revision,
+            "active_source_root": self._active_source_root(),
+            "active_config_root": self._active_config_root(),
+        }
+
+    def release_deploy(self) -> dict[str, Any]:
+        """release.deploy: activate the candidate workspace."""
+        self._require_intake_paused()
+        candidate_source_root = self._candidate_root()
+        candidate_config_bytes = self._candidate_settings_bytes()
+        candidate_config_root = self._candidate_config_root()
+        self._copy_workspace(self.candidate_workspace, self.active_workspace)
+        with self._store.connection:
+            self._store.connection.execute(
+                """
+                UPDATE deployments
+                SET code_root = ?, config_root = ?, config_bytes = ?, activated_tick = ?
+                WHERE revision = 'candidate'
+                """,
+                (
+                    candidate_source_root,
+                    candidate_config_root,
+                    candidate_config_bytes.decode("utf-8"),
+                    self._store.advance(),
+                ),
+            )
+            self._store.connection.execute(
+                "UPDATE deployments SET status = 'available'"
+            )
+            self._store.connection.execute(
+                """
+                UPDATE deployments SET status = 'active' WHERE revision = 'candidate'
+                """
+            )
+        self._store.append_audit(
+            "deployment_activate", self._store.deployment_root(), "operator", self._store.tick()
+        )
+        self._store.connection.commit()
+        self._write_metadata()
+        return {
+            "revision": "candidate",
+            "active_source_root": self._active_source_root(),
+            "active_config_root": self._active_config_root(),
+        }
+
+    def recovery_resume(self) -> int:
+        """recovery.resume: open intake after recovery and public checks."""
+        self._require_intake_paused()
+        if self._active_revision_label() != "candidate":
+            raise ToolError("resume requires a deployed candidate")
+        if not self._store.recovery_provenance_exists():
+            raise ToolError("recovery provenance missing")
+        if not {"P1", "P2", "P3"} <= self._public_workload_pass:
+            raise ToolError("public workloads not passed")
+        tick = self._store.advance()
+        self._store.set_runtime_value("intake_state", "open")
+        self._store.append_audit(
+            "intake_resume", self._store.state_root(), "operator", tick
+        )
+        self._store.append_telemetry(tick, "control", "intake resumed")
+        self._store.connection.commit()
+        self._write_metadata()
+        return tick
+
+    def tool_inventory(self) -> list[str]:
+        return [
+            "release.status",
+            "workspace.read",
+            "workspace.edit",
+            "telemetry.logs",
+            "telemetry.trace",
+            "state.inspect",
+            "runtime.run",
+            "recovery.pause",
+            "recovery.restore",
+            "release.rollback",
+            "release.deploy",
+            "recovery.resume",
+        ]
+
+    def leak_probe(self) -> dict[str, Any]:
+        """Executable probe that the session does not contain privileged material."""
+        problems: list[str] = []
+        if (self.session_dir / "service.sqlite3").exists():
+            problems.append("session contains fixture database")
+        if (self.session_dir / "tests").exists():
+            problems.append("session contains tests")
+        if (self.session_dir / "evidence").exists():
+            problems.append("session contains evidence")
+        if (self.session_dir / "src").exists():
+            problems.append("session contains privileged source")
+        text = " ".join(
+            [
+                self.session_id,
+                str(self.metadata_path.read_bytes(), errors="replace"),
+                self._active_source_root(),
+            ]
+        ).lower()
+        for token in ("profile", "member", "authority", "fixture_profile"):
+            if token in text:
+                problems.append(f"session metadata leaks token {token}")
+        return {"passed": not problems, "problems": problems}

@@ -29,12 +29,14 @@ SCHEMA_TABLES: Final[tuple[str, ...]] = (
     "audit_chain",
     "runtime_state",
     "telemetry",
+    "trace_spans",
 )
 
 AUDIT_TABLES: Final[tuple[str, ...]] = ("audit_chain",)
 DEPLOYMENT_TABLES: Final[tuple[str, ...]] = ("deployments",)
 RUNTIME_TABLES: Final[tuple[str, ...]] = ("runtime_state",)
 TELEMETRY_TABLES: Final[tuple[str, ...]] = ("telemetry",)
+TRACE_TABLES: Final[tuple[str, ...]] = ("trace_spans",)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -137,6 +139,20 @@ CREATE TABLE telemetry (
     channel TEXT NOT NULL,
     message TEXT NOT NULL
 );
+
+CREATE TABLE trace_spans (
+    seq INTEGER PRIMARY KEY,
+    correlation_handle TEXT NOT NULL,
+    span_id TEXT NOT NULL,
+    parent_id TEXT,
+    workload_id TEXT,
+    alias TEXT,
+    stage TEXT NOT NULL,
+    event_id TEXT,
+    command_key TEXT,
+    occurrence_id TEXT,
+    tick INTEGER NOT NULL
+);
 """
 
 
@@ -206,6 +222,88 @@ class StateStore:
             (next_seq, tick, channel, message),
         )
         return next_seq
+
+    def append_trace_span(
+        self,
+        *,
+        correlation_handle: str,
+        span_id: str,
+        parent_id: str | None,
+        workload_id: str | None,
+        alias: str | None,
+        stage: str,
+        event_id: str | None,
+        command_key: str | None,
+        occurrence_id: str | None,
+        tick: int,
+    ) -> int:
+        next_seq = int(
+            self.connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM trace_spans"
+            ).fetchone()[0]
+        )
+        self.connection.execute(
+            """
+            INSERT INTO trace_spans(
+                seq, correlation_handle, span_id, parent_id, workload_id, alias,
+                stage, event_id, command_key, occurrence_id, tick
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                next_seq,
+                correlation_handle,
+                span_id,
+                parent_id,
+                workload_id,
+                alias,
+                stage,
+                event_id,
+                command_key,
+                occurrence_id,
+                tick,
+            ),
+        )
+        return next_seq
+
+    def trace_spans_for_handle(self, correlation_handle: str) -> list[tuple[Any, ...]]:
+        return self.rows(
+            """
+            SELECT seq, span_id, parent_id, workload_id, alias, stage, event_id,
+                   command_key, occurrence_id, tick
+            FROM trace_spans
+            WHERE correlation_handle = ?
+            ORDER BY seq
+            """,
+            (correlation_handle,),
+        )
+
+    def trace_handle_exists(self, correlation_handle: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM trace_spans WHERE correlation_handle = ? LIMIT 1",
+            (correlation_handle,),
+        ).fetchone()
+        return row is not None
+
+    def trace_selectors_for_handle(
+        self, correlation_handle: str
+    ) -> list[dict[str, str | None]]:
+        rows = self.connection.execute(
+            """
+            SELECT DISTINCT event_id, command_key, occurrence_id
+            FROM trace_spans
+            WHERE correlation_handle = ?
+            AND event_id IS NOT NULL
+            """,
+            (correlation_handle,),
+        ).fetchall()
+        return [
+            {
+                "event_id": event_id,
+                "command_key": command_key,
+                "occurrence_id": occurrence_id,
+            }
+            for event_id, command_key, occurrence_id in rows
+        ]
 
     def service_document(self) -> list[dict[str, Any]]:
         return table_document(self.connection, SERVICE_TABLES)
@@ -520,6 +618,77 @@ class StateStore:
         ).fetchone()[0]
         if latest_audit_seq != audit_seq or self.state_root() != post_state_root:
             return False
+        if not self.snapshot_is_valid(snapshot_id):
+            return False
+        snapshot_state = self.connection.execute(
+            "SELECT state_root FROM recovery_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if snapshot_state is None or snapshot_state[0] != post_state_root:
+            return False
+        proof_fields = {
+            "proof_id": proof_id,
+            "snapshot_id": snapshot_id,
+            "pre_state_root": pre_state_root,
+            "post_state_root": post_state_root,
+            "prior_audit_root": prior_audit_root,
+            "action_kind": action_kind,
+            "action_tick": action_tick,
+            "actor_scope": actor_scope,
+            "audit_seq": audit_seq,
+            "audit_entry_hash": audit_entry_hash,
+        }
+        if not self._authority.recovery_tag_is_valid(proof_fields, auth_tag):
+            return False
+        audit_entry = self.connection.execute(
+            """
+            SELECT action_kind, resulting_root, actor, entry_hash, at_tick
+            FROM audit_chain WHERE seq = ?
+            """,
+            (audit_seq,),
+        ).fetchone()
+        if audit_entry != (
+            action_kind,
+            post_state_root,
+            actor_scope,
+            audit_entry_hash,
+            action_tick,
+        ):
+            return False
+        return self._audit_root_through(audit_seq - 1) == prior_audit_root
+
+    def recovery_provenance_exists(self) -> bool:
+        """Verify a signed recovery proof exists and is internally consistent.
+
+        Unlike ``recovery_is_valid`` this does not require the current service
+        state to equal the proof's post-state root, so it remains useful after
+        later verification workloads have mutated state.
+        """
+        if not self.audit_chain_valid():
+            return False
+        proof = self.connection.execute(
+            """
+            SELECT proof_id, snapshot_id, pre_state_root, post_state_root,
+                   prior_audit_root, action_kind, action_tick, actor_scope,
+                   audit_seq, audit_entry_hash, auth_tag
+            FROM recovery_proofs ORDER BY audit_seq DESC LIMIT 1
+            """
+        ).fetchone()
+        if proof is None:
+            return False
+        (
+            proof_id,
+            snapshot_id,
+            pre_state_root,
+            post_state_root,
+            prior_audit_root,
+            action_kind,
+            action_tick,
+            actor_scope,
+            audit_seq,
+            audit_entry_hash,
+            auth_tag,
+        ) = proof
         if not self.snapshot_is_valid(snapshot_id):
             return False
         snapshot_state = self.connection.execute(
