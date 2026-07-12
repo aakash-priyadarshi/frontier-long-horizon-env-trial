@@ -7,11 +7,11 @@ public artifacts and distinct privileged histories.
 
 ## Current status
 
-**Milestone 1 closed after targeted re-audit. Milestone 2 interaction-layer
-implementation is closed: the audit findings C1, M1-M5 and the remaining
-targeted gaps (trace capability authority, source-commit binding, gateway error
-codes, fixed tool dispatch, and deterministic evidence) are implemented and
-verified.**
+**Final integrated build. The environment now provides a canonical `training_ground`
+core, a strict `strict_verifier` grader, APEX-SWE integration adapters, and
+reconciled Gymnasium/APEX wrappers. All 84 targeted tests and the final
+verification script pass and produce a machine-readable receipt at
+`evidence/final-environment.json`.**
 
 The repository currently provides:
 
@@ -27,17 +27,20 @@ The repository currently provides:
 - a process-separated JSON tool gateway that is the evaluated agent's only
   supported interface (the privileged controller owns the fixture, session, and
   runtime; the evaluated side speaks JSON-lines over stdin/stdout);
-- focused Milestone 2 interaction-layer tests plus the Milestone 1 regression baseline;
-- one-command verifiers that rerun tests and regenerate evidence receipts from
-  fresh fixtures.
+- `src/training_ground/` — the canonical Gymnasium-compatible environment core
+  with protocol, actions, observations, episodes, manifests, and CLI;
+- `src/strict_verifier/` — deterministic ground-truth verifier, predicates,
+  hidden workloads, reward ladder, and receipts;
+- `src/training_adapters/` — Gymnasium env and APEX result shaping that wrap
+  `training_ground`;
+- `src/integrations/apex_swe/` — APEX-SWE task harness over `training_ground`;
+- `tests/final_core/`, `tests/soundness/`, `tests/controls/`, and
+  `tests/integrations/` — final-core, soundness, control, and integration tests.
 
 Training/APEX interoperability adapters live under `src/training_adapters/` and
-`integrations/apex_swe/` (see `docs/training-adapters.md`). They wrap the twelve-tool
-gateway for Gymnasium rollouts and APEX-SWE task packaging without changing the
-hidden verifier or evidence receipts.
-
-The hidden verifier, full workload suite, solution controls, container runtime,
-and model evaluations are intentionally deferred to later approved milestones.
+`src/integrations/apex_swe/` (see `docs/training-adapters.md`). They wrap the
+`training_ground` core for Gymnasium rollouts and APEX-SWE task packaging without
+changing the hidden verifier or evidence receipts.
 
 ## Repository layout
 
@@ -63,28 +66,28 @@ python -m venv .venv
 
 ## Verify
 
-Run the full test suite (Milestone 1 regression baseline plus Milestone 2):
+Run the full test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Regenerate the machine-readable receipts from fresh live runs:
+Regenerate the final machine-readable receipt from fresh live runs:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\verify_milestone_1.py
-.\.venv\Scripts\python.exe scripts\verify_milestone_2.py
+.\.venv\Scripts\python.exe scripts\verify_final_environment.py --output evidence\final-environment.json
 ```
 
-The `verify_milestone_2.py` entrypoint runs `pytest tests/milestone_1` and
-`pytest tests/milestone_2` separately, then performs a live agent-surface run
-through the process-separated JSON gateway. It stops if pytest or any live root,
-equality, authentication, recovery, leak, or capability check fails. On success it
-writes `evidence/milestone-2-interaction-layer.json` with the source commit SHA,
-per-milestone test counts, and a total count.
-`verify_milestone_1.py` and `verify_milestone_2.py` accept `--source-commit` to
-bind the receipt to the implementation commit when the receipt is committed at
-repository tip.
+The `verify_final_environment.py` entrypoint runs pytest, runs `training_ground`
+scripted trajectories on `dev` and `eval` instances, lists public instance IDs,
+validates the Gymnasium adapter, and writes `evidence/final-environment.json`.
+Additional scripts:
+
+```powershell
+.\.venv\Scripts\python.exe -m training_ground.cli run-scripted --split eval --seed 0
+.\.venv\Scripts\python.exe scripts\smoke_apex_scripted.py
+.\.venv\Scripts\python.exe -m training_ground.cli list-instances --split eval --count 5
+```
 
 ## Security boundary
 

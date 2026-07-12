@@ -1,14 +1,17 @@
-"""Scripted and generic rollout runners (no paid model calls)."""
+"""Scripted and generic rollout runners (no paid model calls).
+
+These runners wrap the canonical training_ground environment so that smoke tests,
+APEX adapters, and Gymnasium share the same episode logic.
+"""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
-from .protocol import AdapterResponse
+from training_ground.loader import load_environment
+
 from .sanitize import sanitize_payload
-from .session import ProtocolGateway, ProtocolSession
 
 
 class Policy(Protocol):
@@ -102,35 +105,46 @@ def run_rollout(
     policy: Policy | None = None,
     max_steps: int = 32,
 ) -> RolloutResult:
-    """Execute a policy against a live ProtocolSession."""
+    """Execute a policy against the training_ground environment."""
     policy = policy or ScriptedRecoveryPolicy()
     result = RolloutResult(fixture_index=profile)
-    with ProtocolGateway(profile) as session:
-        observation = session.observation()
+    env = load_environment(
+        "eval",
+        0,
+        options={"profile": profile, "max_steps": max_steps},
+    )
+    observation, _ = env.reset()
+    try:
         for step in range(max_steps):
             tool, arguments = policy.select(observation, step)
-            response: AdapterResponse = session.call(tool, arguments)
-            observation = session.observation()
+            observation, reward, terminated, truncated, info = env.step(
+                {"tool": tool, "arguments": arguments}
+            )
             result.steps.append(
                 RolloutStep(
                     step=step,
                     tool=tool,
                     arguments=arguments,
-                    response=response.to_dict(),
+                    response=info.get("response", {}),
                     observation=observation,
                 )
             )
-            status = observation.get("status") if observation.get("ok") else {}
             if (
-                isinstance(status, dict)
-                and status.get("incident") == "closed"
-                and status.get("public_canary") == "pass"
+                observation.get("incident") == "closed"
+                and observation.get("public_canary") == "pass"
             ):
                 result.success = True
+                result.final_observation = {"ok": True, "status": observation}
+                break
+            if terminated or truncated:
+                result.truncated = not result.success
+                result.final_observation = {"ok": False, "status": observation}
                 break
         else:
             result.truncated = True
-        result.final_observation = observation
+            result.final_observation = {"ok": False, "status": observation}
+    finally:
+        env.close()
     return result
 
 

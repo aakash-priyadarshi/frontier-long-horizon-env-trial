@@ -33,6 +33,7 @@ class ToolClient:
         self._process = process
         self._request_id = 0
         self.session_dir: Path | None = None
+        self.fixture_dir: Path | None = None
 
     def _call(self, tool: str, **arguments: Any) -> Any:
         request_id = str(self._request_id)
@@ -178,6 +179,7 @@ class ToolGateway:
             raise RuntimeError(f"gateway controller ready error: {ready['error']}")
         self._client = ToolClient(self._process.stdin, self._process.stdout, self._process)
         self._client.session_dir = Path(ready["result"]["session_dir"])
+        self._client.fixture_dir = self.fixture_dir
         return self._client
 
     def __exit__(

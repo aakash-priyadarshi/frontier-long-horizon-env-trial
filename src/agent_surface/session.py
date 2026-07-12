@@ -467,6 +467,8 @@ class AgentSession:
     def runtime_run(self, workload_id: str, cutpoint: str | None = None) -> dict[str, Any]:
         """runtime.run: execute a deterministic public workload or diagnostic cutpoint."""
         self._require_intake_paused()
+        if workload_id.startswith("H-"):
+            raise ToolError("unknown workload or missing cutpoint", code="unknown_workload")
         run_id = len(self._workload_history)
         active_config_root = self._active_config_root()
         engine = RuntimeEngine(

@@ -328,3 +328,12 @@ Every milestone follows this sequence:
 No later milestone begins automatically after tests pass. Milestone 1 is closed after
 targeted re-audit. The current authorised work is Milestone 2 interaction-layer
 implementation only.
+
+## Build, test, and verify commands
+
+- Install: `.\.venv\Scripts\python.exe -m pip install -e ".[test,adapters]"`
+- Full test suite: `.\.venv\Scripts\python.exe -m pytest tests -q`
+- Final environment verification: `.\.venv\Scripts\python.exe scripts\verify_final_environment.py --output evidence\final-environment.json`
+- CLI scripted run: `.\.venv\Scripts\python.exe -m training_ground.cli run-scripted --split eval --seed 0`
+- APEX smoke: `.\.venv\Scripts\python.exe scripts\smoke_apex_scripted.py`
+- Instance IDs: `.\.venv\Scripts\python.exe -m training_ground.cli list-instances --split eval --count 5`

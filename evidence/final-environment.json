@@ -1,0 +1,23 @@
+{
+  "milestone": "final-integrated-environment",
+  "schema_version": 3,
+  "tested_source_commit": "94e2c63991eeed26d41ed8c9769516fb95dd54b9",
+  "timestamp": "2026-07-12T13:00:30.131407+00:00",
+  "verification": {
+    "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
+    "gym_reward": 1.0,
+    "instance_ids": [
+      "instance-287e1bfc1e4cf2a0fe630b65",
+      "instance-0630bc772893282e888b1deb",
+      "instance-5bcdc16e49b80165e9535786",
+      "instance-4d8b722c25a0c14b4d97bab7",
+      "instance-1411c132222713a6cc1de879"
+    ],
+    "outcome": "pass",
+    "pytest_exit_code": 0,
+    "python_version": "3.12.13",
+    "scripted_dev_score": 1.0,
+    "scripted_eval_score": 1.0,
+    "test_count": 84
+  }
+}

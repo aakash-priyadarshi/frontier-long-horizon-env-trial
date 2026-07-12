@@ -1,11 +1,12 @@
-"""Gymnasium-compatible environment over the twelve-tool gateway protocol."""
+"""Gymnasium-compatible environment wrapper over the training_ground core."""
 
 from __future__ import annotations
 
+import json
 from typing import Any, SupportsFloat
 
-from .protocol import ALLOWED_TOOLS
-from .session import ProtocolGateway, ProtocolSession
+from training_ground.loader import load_environment
+from training_ground.protocol import EnvironmentError
 
 try:
     import gymnasium as gym
@@ -24,20 +25,33 @@ def _require_gym() -> None:
 
 
 class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[misc]
-    """Single-agent Gymnasium env with Dict actions ``{tool, arguments}``."""
+    """Single-agent Gymnasium env with Dict actions ``{tool, arguments_json}``."""
 
     metadata = {"render_modes": []}
 
-    def __init__(self, profile: int = 0, *, max_steps: int = 64) -> None:
+    def __init__(
+        self,
+        profile: int = 0,
+        *,
+        split: str = "train",
+        seed: int = 0,
+        max_steps: int = 64,
+        work_dir: str | None = None,
+    ) -> None:
         _require_gym()
         assert spaces is not None
         self.profile = profile
+        self.split = split
+        self.seed = seed
         self.max_steps = max_steps
-        self._gateway: ProtocolGateway | None = None
-        self._session: ProtocolSession | None = None
-        self._steps = 0
+        self.work_dir = work_dir
+        self._core = load_environment(
+            split=split,
+            seed=seed,
+            options={"profile": profile, "max_steps": max_steps},
+            work_dir=work_dir,
+        )
         self._closed = True
-        # Text spaces keep the action contract explicit without enumerating args.
         self.action_space = spaces.Dict(
             {
                 "tool": spaces.Text(min_length=1, max_length=64),
@@ -51,12 +65,11 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
             }
         )
 
-    def _encode_obs(self, status: dict[str, Any], last_ok: bool) -> dict[str, Any]:
-        import json
-
+    def _encode_obs(self, status: dict[str, Any]) -> dict[str, Any]:
+        last_ok = 0 if "error" in status else 1
         return {
             "status_json": json.dumps(status, sort_keys=True, ensure_ascii=True),
-            "last_ok": 1 if last_ok else 0,
+            "last_ok": last_ok,
         }
 
     def reset(
@@ -65,53 +78,41 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
         _require_gym()
         super().reset(seed=seed)
         self.close()
-        self._gateway = ProtocolGateway(self.profile)
-        self._session = self._gateway.__enter__()
-        self._steps = 0
+        seed = seed if seed is not None else self.seed
+        obs, info = self._core.reset(seed=seed, options=options)
         self._closed = False
-        obs = self._session.observation()
-        return self._encode_obs(obs, True), {"allowed_tools": list(ALLOWED_TOOLS)}
+        info["allowed_tools"] = info.get("allowed_tools", [])
+        return self._encode_obs(obs), info
 
     def step(
         self, action: dict[str, Any]
     ) -> tuple[dict[str, Any], SupportsFloat, bool, bool, dict[str, Any]]:
-        import json
-
-        if self._session is None or self._closed:
+        if self._closed:
             raise RuntimeError("environment is not reset")
         tool = str(action.get("tool", ""))
         raw_args = action.get("arguments_json", "{}")
         try:
             arguments = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-        except json.JSONDecodeError:
-            arguments = {}
-            response_ok = False
-            info = {"error": {"code": "invalid_arguments", "message": "arguments_json must be JSON object"}}
-            obs = self._session.observation()
-            self._steps += 1
-            terminated = False
-            truncated = self._steps >= self.max_steps
-            return self._encode_obs(obs, False), -0.05, terminated, truncated, info
-
-        response = self._session.call(tool, arguments if isinstance(arguments, dict) else {})
-        self._steps += 1
-        obs = self._session.observation()
-        reward = 0.01 if response.ok else -0.05
-        status = obs.get("status") if obs.get("ok") else {}
-        terminated = bool(
-            isinstance(status, dict)
-            and status.get("incident") == "closed"
-            and status.get("public_canary") == "pass"
-        )
-        if terminated:
-            reward = 1.0
-        truncated = (not terminated) and self._steps >= self.max_steps
-        info = {"response": response.to_dict(), "steps": self._steps}
-        return self._encode_obs(obs, response.ok), reward, terminated, truncated, info
+            if not isinstance(arguments, dict):
+                raise ValueError("arguments_json must be a JSON object")
+            core_action = {"tool": tool, "arguments": arguments}
+            obs, reward, terminated, truncated, info = self._core.step(core_action)
+            return self._encode_obs(obs), float(reward), terminated, truncated, info
+        except (json.JSONDecodeError, ValueError) as exc:
+            obs = self._core._last_status or {
+                "error": str(exc),
+                "incident": "open",
+                "public_canary": "green_once",
+            }
+            return self._encode_obs(obs), 0.0, False, False, {"error": str(exc)}
 
     def close(self) -> None:
-        if self._gateway is not None and not self._closed:
-            self._gateway.__exit__(None, None, None)
-        self._gateway = None
-        self._session = None
+        if not self._closed:
+            self._core.close()
         self._closed = True
+
+    def __enter__(self) -> "IncidentGymEnv":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()

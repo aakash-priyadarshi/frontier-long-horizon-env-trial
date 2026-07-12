@@ -42,3 +42,15 @@ hidden workloads, or evidence receipts.
 .\.venv\Scripts\python.exe scripts\smoke_apex_scripted.py
 .\.venv\Scripts\python.exe scripts\smoke_apex_docker.py
 ```
+
+## Integration package
+
+`src/integrations/apex_swe/` provides a `run_apex_trial` harness over the
+canonical `training_ground` environment. It formats results using
+`training_adapters.apex_compat` and writes APEX-style `result.json` and
+`stdout.txt` markers.
+
+## Scoring note
+
+APEX smoke tasks grade the **public recovery path** only. The full hidden
+verdict comes from `strict_verifier` after the same `training_ground` trajectory.
