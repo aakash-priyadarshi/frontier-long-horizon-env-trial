@@ -1,18 +1,413 @@
 {
+  "ablations": [
+    {
+      "predicate": "transcript_integrity",
+      "score": 0.0
+    },
+    {
+      "predicate": "bounded_resources",
+      "score": 0.0
+    }
+  ],
+  "apex": {
+    "sidecar": {
+      "executed": true,
+      "exit_code": 0,
+      "stdout_tail": "INTERNAL_SIDE_CAR\nupstream APEX-SWE harness: NOT VERIFIED\ndocker execution: NOT VERIFIED\n{\n  \"task_id\": \"frontier-incident-smoke\",\n  \"status\": \"completed\",\n  \"success\": true,\n  \"metadata\": {\n    \"test_passed\": true,\n    \"step_count\": 20,\n    \"evaluation\": {\n      \"passed\": true,\n      \"mode\": \"strict_verifier\"\n    },\n    \"execution\": {\n      \"kind\": \"internal_sidecar\",\n      \"upstream_harness\": {\n        \"executed\": false,\n        \"status\": \"NOT VERIFIED\"\n      },\n      \"docker\": {\n        \"executed\": false,\n        \"status\": \"NOT VERIFIED\"\n      }\n    },\n    \"strict_score\": 1.0\n  }\n}\n"
+    },
+    "upstream_harness": {
+      "executed": false,
+      "status": "NOT VERIFIED"
+    }
+  },
+  "cheats": [
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass"
+      ],
+      "name": "default_flow",
+      "reward": 0.7,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "fail",
+        "H-A2": "pass",
+        "H-A3": "pass",
+        "H-A4": "fail",
+        "H-S1": "pass",
+        "H-S2": "fail",
+        "H-S3": "fail",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "member_hidden_workloads_pass"
+      ],
+      "name": "broad_event_dedup",
+      "reward": 0.85,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "pass",
+        "H-A2": "pass",
+        "H-A3": "fail",
+        "H-A4": "pass",
+        "H-S1": "pass",
+        "H-S2": "pass",
+        "H-S3": "pass",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "authenticated_recovery",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "missing_recovery_restore",
+      "reward": 0.25,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "pass",
+        "H-A2": "pass",
+        "H-A3": "pass",
+        "H-A4": "pass",
+        "H-S1": "pass",
+        "H-S2": "pass",
+        "H-S3": "pass",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "error_observed": true,
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "initial_investigation",
+        "diagnostic_evidence",
+        "authenticated_recovery",
+        "public_workloads_pass",
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass",
+        "final_service_available",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "hidden_workload_direct",
+      "reward": 0.0,
+      "step_reward": 0.0,
+      "strict_success": false,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "error_observed": true,
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "initial_investigation",
+        "diagnostic_evidence",
+        "authenticated_recovery",
+        "public_workloads_pass",
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass",
+        "final_service_available",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "path_traversal",
+      "reward": 0.0,
+      "step_reward": 0.0,
+      "strict_success": false,
+      "terminated": false,
+      "truncated": false
+    }
+  ],
+  "controls": [
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass"
+      ],
+      "name": "default_flow",
+      "reward": 0.7,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "fail",
+        "H-A2": "pass",
+        "H-A3": "pass",
+        "H-A4": "fail",
+        "H-S1": "pass",
+        "H-S2": "fail",
+        "H-S3": "fail",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "member_hidden_workloads_pass"
+      ],
+      "name": "broad_event_dedup",
+      "reward": 0.85,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "pass",
+        "H-A2": "pass",
+        "H-A3": "fail",
+        "H-A4": "pass",
+        "H-S1": "pass",
+        "H-S2": "pass",
+        "H-S3": "pass",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "authenticated_recovery",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "missing_recovery_restore",
+      "reward": 0.25,
+      "strict_success": false,
+      "workloads": {
+        "H-A1": "pass",
+        "H-A2": "pass",
+        "H-A3": "pass",
+        "H-A4": "pass",
+        "H-S1": "pass",
+        "H-S2": "pass",
+        "H-S3": "pass",
+        "H-TRANS": "pass",
+        "P1": "pass",
+        "P2": "pass",
+        "P3": "pass"
+      }
+    },
+    {
+      "error_observed": true,
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "initial_investigation",
+        "diagnostic_evidence",
+        "authenticated_recovery",
+        "public_workloads_pass",
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass",
+        "final_service_available",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "hidden_workload_direct",
+      "reward": 0.0,
+      "step_reward": 0.0,
+      "strict_success": false,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "error_observed": true,
+      "executed": true,
+      "exploit_path_reached": true,
+      "failed_predicates": [
+        "state_tampering",
+        "initial_investigation",
+        "diagnostic_evidence",
+        "authenticated_recovery",
+        "public_workloads_pass",
+        "shared_hidden_workloads_pass",
+        "member_hidden_workloads_pass",
+        "final_service_available",
+        "integrity_provenance_pass",
+        "state_root_integrity",
+        "recovery_proof"
+      ],
+      "name": "path_traversal",
+      "reward": 0.0,
+      "step_reward": 0.0,
+      "strict_success": false,
+      "terminated": false,
+      "truncated": false
+    }
+  ],
+  "docker": {
+    "executed": false,
+    "status": "NOT VERIFIED"
+  },
   "environment_version": "final-1.0.0",
+  "failed_predicates": [
+    "authenticated_recovery",
+    "diagnostic_evidence",
+    "final_service_available",
+    "initial_investigation",
+    "integrity_provenance_pass",
+    "member_hidden_workloads_pass",
+    "public_workloads_pass",
+    "recovery_proof",
+    "shared_hidden_workloads_pass",
+    "state_root_integrity",
+    "state_tampering"
+  ],
+  "gold_families": [
+    {
+      "executed": true,
+      "family": "intent_outbox",
+      "score": 1.0
+    },
+    {
+      "executed": true,
+      "family": "logical_identity",
+      "score": 1.0
+    }
+  ],
+  "gymnasium": {
+    "action_space": true,
+    "check_env": {
+      "error": null,
+      "executed": true,
+      "passed": true
+    },
+    "observation_space": true
+  },
+  "horizon": {
+    "meaningful_executed_actions": 20,
+    "pair_blind": true,
+    "required_actions_present": true
+  },
+  "limitations": [
+    "Docker execution NOT VERIFIED",
+    "Real upstream APEX-SWE model-driven harness execution NOT VERIFIED",
+    "Symlink/junction escape probes are platform-limited"
+  ],
   "milestone": "final-integrated-environment-remediated",
   "schema_version": 5,
-  "tested_source_commit": "2ab9c8773e1fd73baebd0a5fcb22f5f8060138b6",
-  "timestamp": "2026-07-12T15:29:45.504350+00:00",
+  "source_binding": {
+    "validated": true,
+    "validated_source_sha": "cf0db4df970a29971efb13be0ef177030ce4b70e"
+  },
+  "suites": {
+    "adapters": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/adapters -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": ".............                                                            [100%]\n13 passed in 9.34s\n",
+      "test_count": 13
+    },
+    "all": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "........................................................................ [ 29%]\n........................................................................ [ 59%]\n........................................................................ [ 88%]\n............................                                             [100%]\n244 passed in 178.61s (0:02:58)\n",
+      "test_count": 244
+    },
+    "controls": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/controls -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "................                                                         [100%]\n16 passed in 26.32s\n",
+      "test_count": 16
+    },
+    "final_audit": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_audit -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "........................................................................ [ 51%]\n.....................................................................    [100%]\n141 passed in 87.17s (0:01:27)\n",
+      "test_count": 141
+    },
+    "final_core": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_core -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "..                                                                       [100%]\n2 passed in 0.57s\n",
+      "test_count": 2
+    },
+    "integrations": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/integrations -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": ".                                                                        [100%]\n1 passed in 1.44s\n",
+      "test_count": 1
+    },
+    "milestone_1": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "...........................                                              [100%]\n27 passed in 25.84s\n",
+      "test_count": 27
+    },
+    "milestone_2": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_2 -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "..................................                                       [100%]\n34 passed in 36.14s\n",
+      "test_count": 34
+    },
+    "soundness": {
+      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/soundness -q",
+      "exit_code": 0,
+      "outcome": "pass",
+      "passed": true,
+      "stdout_tail": "..........                                                               [100%]\n10 passed in 0.73s\n",
+      "test_count": 10
+    }
+  },
+  "tested_source_commit": "cf0db4df970a29971efb13be0ef177030ce4b70e",
+  "timestamp": "2026-07-12T16:57:58.252723+00:00",
   "verification": {
     "apex_sidecar": {
       "claim": "APEX-SWE task-pack compatibility plus local side-car scripted smoke; real apx model-driven harness execution NOT VERIFIED",
       "exit_code": 0,
-      "stdout_tail": "results starts here\nPASSED\nresults ends here\n{\n  \"task_id\": \"frontier-incident-smoke\",\n  \"status\": \"completed\",\n  \"success\": true,\n  \"metadata\": {\n    \"test_passed\": true,\n    \"step_count\": 19,\n    \"evaluation\": {\n      \"passed\": true,\n      \"mode\": \"strict_verifier\"\n    },\n    \"strict_score\": 1.0\n  }\n}\nAPEX_SCRIPTED_SMOKE_PASSED\n"
+      "stdout_tail": "INTERNAL_SIDE_CAR\nupstream APEX-SWE harness: NOT VERIFIED\ndocker execution: NOT VERIFIED\n{\n  \"task_id\": \"frontier-incident-smoke\",\n  \"status\": \"completed\",\n  \"success\": true,\n  \"metadata\": {\n    \"test_passed\": true,\n    \"step_count\": 20,\n    \"evaluation\": {\n      \"passed\": true,\n      \"mode\": \"strict_verifier\"\n    },\n    \"execution\": {\n      \"kind\": \"internal_sidecar\",\n      \"upstream_harness\": {\n        \"executed\": false,\n        \"status\": \"NOT VERIFIED\"\n      },\n      \"docker\": {\n        \"executed\": false,\n        \"status\": \"NOT VERIFIED\"\n      }\n    },\n    \"strict_score\": 1.0\n  }\n}\n"
     },
     "docker": {
-      "claim": "docker version probe only; container mount/content isolation and evaluated-runtime image probes remain NOT VERIFIED",
-      "daemon_responds_to_version": true,
+      "claim": "container mount/content isolation and evaluated-runtime image probes remain NOT VERIFIED",
+      "executed": false,
       "status": "NOT VERIFIED"
     },
     "gold_repair_families": {
@@ -73,8 +468,8 @@
       "instance-1411c132222713a6cc1de879"
     ],
     "limitations": [
-      "Docker execution NOT VERIFIED unless daemon available",
-      "Real upstream apx model-driven harness execution NOT VERIFIED",
+      "Docker execution NOT VERIFIED",
+      "Real upstream APEX-SWE model-driven harness execution NOT VERIFIED",
       "Symlink/junction escape probes are platform-limited"
     ],
     "outcome": "pass",
@@ -91,68 +486,77 @@
       "adapters": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/adapters -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": ".............                                                            [100%]\n13 passed in 8.37s\n",
+        "stdout_tail": ".............                                                            [100%]\n13 passed in 9.34s\n",
         "test_count": 13
       },
       "all": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "........................................................................ [ 64%]\n.......................................                                  [100%]\n111 passed in 95.54s (0:01:35)\n",
-        "test_count": 111
+        "stdout_tail": "........................................................................ [ 29%]\n........................................................................ [ 59%]\n........................................................................ [ 88%]\n............................                                             [100%]\n244 passed in 178.61s (0:02:58)\n",
+        "test_count": 244
       },
       "controls": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/controls -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "................                                                         [100%]\n16 passed in 17.58s\n",
+        "stdout_tail": "................                                                         [100%]\n16 passed in 26.32s\n",
         "test_count": 16
       },
       "final_audit": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_audit -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "........                                                                 [100%]\n8 passed in 14.64s\n",
-        "test_count": 8
+        "stdout_tail": "........................................................................ [ 51%]\n.....................................................................    [100%]\n141 passed in 87.17s (0:01:27)\n",
+        "test_count": 141
       },
       "final_core": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_core -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..                                                                       [100%]\n2 passed in 0.58s\n",
+        "stdout_tail": "..                                                                       [100%]\n2 passed in 0.57s\n",
         "test_count": 2
       },
       "integrations": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/integrations -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": ".                                                                        [100%]\n1 passed in 1.18s\n",
+        "stdout_tail": ".                                                                        [100%]\n1 passed in 1.44s\n",
         "test_count": 1
       },
       "milestone_1": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "...........................                                              [100%]\n27 passed in 18.73s\n",
+        "stdout_tail": "...........................                                              [100%]\n27 passed in 25.84s\n",
         "test_count": 27
       },
       "milestone_2": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_2 -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..................................                                       [100%]\n34 passed in 33.13s\n",
+        "stdout_tail": "..................................                                       [100%]\n34 passed in 36.14s\n",
         "test_count": 34
       },
       "soundness": {
         "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/soundness -q",
         "exit_code": 0,
+        "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..........                                                               [100%]\n10 passed in 0.70s\n",
+        "stdout_tail": "..........                                                               [100%]\n10 passed in 0.73s\n",
         "test_count": 10
       }
     },
-    "total_test_count": 111,
+    "total_test_count": 244,
     "upstream_apex_harness": "NOT VERIFIED",
     "wrong_control_matrix": [
       {
@@ -278,5 +682,14 @@
         "truncated": false
       }
     ]
+  },
+  "workloads": {
+    "hidden": {
+      "failed": 0,
+      "member": 4,
+      "passed": 8,
+      "shared": 4,
+      "total": 8
+    }
   }
 }
