@@ -110,6 +110,8 @@ def validate_source_commit(
         resolved = candidate
     else:
         resolved = _resolve_to_full_sha(repo, source_commit)
+        if _is_receipt_only_commit(repo, resolved, allowed_receipt_files):
+            raise ValueError("explicit source commit cannot be a receipt-only commit")
 
     diff_files = _working_tree_diff_files(repo, resolved)
     disallowed = [f for f in diff_files if f not in allowed_receipt_files]

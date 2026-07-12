@@ -642,15 +642,20 @@ class RuntimeEngine:
             )
             runtime._log(self._public_canary_line(runtime.alias, durable_count))
 
-        effect_count = self._effect_count_for_event_keys(event_ids, ["settlement"])
-        outcome = "pass" if effect_count == len(event_ids) else "fail"
-
+        validation = self._validate_durable_outcome(
+            expected_event_count=len(commands),
+            expected_effect_count=len(commands),
+            event_ids_or_command_pairs=[
+                (command["command_key"], command["occurrence_id"])
+                for command in commands
+            ],
+        )
         return self._build_receipt(
             runtime,
-            event_count=len(event_ids),
-            effect_count=effect_count,
-            net_effect_count=effect_count * EFFECT_AMOUNT,
-            outcome=outcome,
+            event_count=validation["event_count"],
+            effect_count=validation["effect_count"],
+            net_effect_count=validation["net_effect_count"],
+            outcome=validation["outcome"],
         )
 
     def _run_cutpoint_diagnostic(
@@ -1023,13 +1028,20 @@ class RuntimeEngine:
                 self._deliver_event(
                     runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=False
                 )
-            effect_count = self._effect_count_for_event_keys(event_ids, ["settlement"])
+            validation = self._validate_durable_outcome(
+                expected_event_count=len(commands),
+                expected_effect_count=len(commands),
+                event_ids_or_command_pairs=[
+                    (command["command_key"], command["occurrence_id"])
+                    for command in commands
+                ],
+            )
             return self._build_receipt(
                 runtime,
-                event_count=len(event_ids),
-                effect_count=effect_count,
-                net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="pass" if effect_count == len(event_ids) else "fail",
+                event_count=validation["event_count"],
+                effect_count=validation["effect_count"],
+                net_effect_count=validation["net_effect_count"],
+                outcome=validation["outcome"],
             )
 
         if runtime.workload_id == "H-S2":
@@ -1051,13 +1063,19 @@ class RuntimeEngine:
                 self._deliver_event(
                     runtime, service_runtime, event_id, sequence, attempt_budget, retry_on_transient=False
                 )
-            effect_count = self._effect_count_for_rows(rows)
+            validation = self._validate_durable_outcome(
+                expected_event_count=1,
+                expected_effect_count=1,
+                event_ids_or_command_pairs=[
+                    (command["command_key"], command["occurrence_id"])
+                ],
+            )
             return self._build_receipt(
                 runtime,
-                event_count=len(rows),
-                effect_count=effect_count,
-                net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="pass" if len(rows) == 1 and effect_count == 1 else "fail",
+                event_count=validation["event_count"],
+                effect_count=validation["effect_count"],
+                net_effect_count=validation["net_effect_count"],
+                outcome=validation["outcome"],
             )
 
         if runtime.workload_id == "H-TRANS":
@@ -1077,13 +1095,19 @@ class RuntimeEngine:
             self._deliver_event(
                 runtime, service_runtime, event_id, seq[0], attempt_budget, retry_on_transient=True
             )
-            effect_count = self._effect_count_for_event_keys([event_id], ["settlement"])
+            validation = self._validate_durable_outcome(
+                expected_event_count=1,
+                expected_effect_count=1,
+                event_ids_or_command_pairs=[
+                    (command["command_key"], command["occurrence_id"])
+                ],
+            )
             return self._build_receipt(
                 runtime,
-                event_count=1,
-                effect_count=effect_count,
-                net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="pass" if effect_count == 1 else "fail",
+                event_count=validation["event_count"],
+                effect_count=validation["effect_count"],
+                net_effect_count=validation["net_effect_count"],
+                outcome=validation["outcome"],
             )
 
         if runtime.workload_id == "H-S3":
@@ -1139,6 +1163,95 @@ class RuntimeEngine:
             return 0
         event_ids = [event_id for event_id, _ in rows]
         return self._effect_count_for_event_keys(event_ids, None)
+
+    def _journal_rows_for_scope(
+        self, event_ids_or_command_pairs: list[str | tuple[str, str]]
+    ) -> list[tuple[str, int]]:
+        if not event_ids_or_command_pairs:
+            return []
+        first = event_ids_or_command_pairs[0]
+        if isinstance(first, tuple):
+            clauses = []
+            params: list[Any] = []
+            for command_key, occurrence_id in event_ids_or_command_pairs:
+                clauses.append("(command_key = ? AND occurrence_id = ?)")
+                params.extend([command_key, occurrence_id])
+            return [
+                (str(event_id), int(seq))
+                for event_id, seq in self.store.connection.execute(
+                    f"""
+                    SELECT event_id, seq FROM journal
+                    WHERE {' OR '.join(clauses)}
+                    ORDER BY seq
+                    """,
+                    params,
+                ).fetchall()
+            ]
+        event_ids = [str(event_id) for event_id in event_ids_or_command_pairs]
+        placeholders = ",".join("?" for _ in event_ids)
+        return [
+            (str(event_id), int(seq))
+            for event_id, seq in self.store.connection.execute(
+                f"""
+                SELECT event_id, seq FROM journal
+                WHERE event_id IN ({placeholders})
+                ORDER BY seq
+                """,
+                event_ids,
+            ).fetchall()
+        ]
+
+    def _effect_rows_for_events(
+        self, event_ids: list[str]
+    ) -> list[tuple[str, int]]:
+        if not event_ids:
+            return []
+        placeholders = ",".join("?" for _ in event_ids)
+        return [
+            (str(effect_id), int(amount))
+            for effect_id, amount in self.store.connection.execute(
+                f"""
+                SELECT effect_id, amount FROM effects
+                WHERE source_event_id IN ({placeholders})
+                ORDER BY committed_tick, effect_id
+                """,
+                event_ids,
+            ).fetchall()
+        ]
+
+    def _validate_durable_outcome(
+        self,
+        expected_event_count: int,
+        expected_effect_count: int,
+        event_ids_or_command_pairs: list[str | tuple[str, str]],
+    ) -> dict[str, Any]:
+        rows = self._journal_rows_for_scope(event_ids_or_command_pairs)
+        event_ids = [event_id for event_id, _ in rows]
+        effects = self._effect_rows_for_events(event_ids)
+        effect_count = len(effects)
+        net_effect_count = sum(amount for _, amount in effects)
+        cursor = int(
+            self.store.connection.execute(
+                "SELECT committed_seq FROM cursor WHERE stream = 'settlement'"
+            ).fetchone()[0]
+        )
+        max_delivered_seq = max((seq for _, seq in rows), default=0)
+        amounts_ok = all(amount == EFFECT_AMOUNT for _, amount in effects)
+        outcome = (
+            "pass"
+            if len(rows) == expected_event_count
+            and effect_count == expected_effect_count
+            and amounts_ok
+            and net_effect_count == expected_effect_count * EFFECT_AMOUNT
+            and cursor >= max_delivered_seq
+            else "fail"
+        )
+        return {
+            "event_count": len(rows),
+            "effect_count": effect_count,
+            "net_effect_count": net_effect_count,
+            "outcome": outcome,
+        }
 
     def _effect_count_for_event_keys(
         self, event_ids: list[str], logical_effect_keys: list[str] | None

@@ -84,6 +84,9 @@ pytest suites including `tests/final_audit`, runs `training_ground` scripted
 trajectories on `dev` and `eval` instances, lists public instance IDs, validates the
 Gymnasium adapter, records gold-family/control/reward snapshots, and writes
 `evidence/final-environment.json`.
+
+upstream apex-swe harness: **not verified**
+docker execution: **not verified**
 Additional scripts:
 
 ```powershell

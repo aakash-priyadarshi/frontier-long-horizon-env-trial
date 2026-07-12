@@ -15,6 +15,13 @@ from training_adapters.apex_compat import (
 from training_ground.loader import load_environment
 
 
+EXECUTION_METADATA: dict[str, Any] = {
+    "kind": "internal_sidecar",
+    "upstream_harness": {"executed": False, "status": "NOT VERIFIED"},
+    "docker": {"executed": False, "status": "NOT VERIFIED"},
+}
+
+
 def _logger() -> logging.Logger:
     return logging.getLogger("integrations.apex_swe")
 
@@ -60,12 +67,13 @@ def run_apex_trial(
         score = float(grade.get("score", 0.0))
         success = score >= 1.0
 
-        _logger().info("APEX task completed", task_id=task_id, score=score)
+        _logger().info("APEX task completed", extra={"task_id": task_id, "score": score})
         return sanitize_apex_trial_result(
             task_id=task_id,
             success=success,
             step_count=step_count,
             metadata={
+                "execution": EXECUTION_METADATA,
                 "score": score,
                 "verdict": grade.get("verdict"),
                 "predicates": grade.get("predicates"),
@@ -74,12 +82,12 @@ def run_apex_trial(
             },
         )
     except Exception as exc:
-        _logger().error("APEX task failed", task_id=task_id, error=str(exc))
+        _logger().error("APEX task failed", extra={"task_id": task_id, "error": str(exc)})
         return sanitize_apex_trial_result(
             task_id=task_id,
             success=False,
             step_count=0,
-            metadata={"error": str(exc)},
+            metadata={"execution": EXECUTION_METADATA, "error": str(exc)},
         )
     finally:
         env.close()

@@ -63,7 +63,17 @@ def _invoke(
         # red until the final verifier implements the binding interface.
         return 0, output
     monkeypatch.setattr(module, "REPOSITORY_ROOT", repo)
-    monkeypatch.setattr(module, "_run_pytest", lambda: ("pytest tests -q", 0, "1 passed"))
+    monkeypatch.setattr(
+        module,
+        "_run_pytest",
+        lambda *a, **k: {
+            "command": "pytest",
+            "exit_code": 0,
+            "test_count": 1,
+            "passed": True,
+            "stdout_tail": "1 passed",
+        },
+    )
     monkeypatch.setattr(
         module,
         "_run_cli",
@@ -72,8 +82,50 @@ def _invoke(
     monkeypatch.setattr(
         module,
         "_run_gym_valid",
-        lambda: {"terminated": True, "reward": 1.0, "score_one": True},
+        lambda *a, **k: {
+            "terminated": True,
+            "reward": 1.0,
+            "score_one": True,
+            "check_env_passed": True,
+            "check_env_error": None,
+        },
     )
+    monkeypatch.setattr(
+        module,
+        "_horizon_metrics",
+        lambda: {
+            "pair_blind_policy_actions": 15,
+            "includes_diagnostics": True,
+            "includes_trace": True,
+            "includes_rollback": True,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_gold_families",
+        lambda: {
+            "logical_identity_profile0": {"score": 1.0, "verdict": "pass"},
+            "intent_outbox_profile0": {"score": 1.0, "verdict": "pass"},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_wrong_control_matrix",
+        lambda: [
+            {
+                "name": "control",
+                "executed": True,
+                "exploit_path_reached": True,
+                "failed_predicates": ["public_workloads_pass"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "_reward_ablation_matrix",
+        lambda: {"without_transcript_integrity": 0.0, "without_bounded_resources": 0.0},
+    )
+    monkeypatch.setattr(module, "_run_command", lambda *a, **k: ("INTERNAL_SIDE_CAR\n", 0))
     monkeypatch.setattr(sys, "argv", [str(module.__file__), "--output", str(output), *args])
     try:
         return int(module.main()), output

@@ -10,6 +10,7 @@ from typing import Any, Type
 
 from agent_surface.errors import ToolError
 from agent_surface.gateway import ToolClient, ToolGateway
+from training_adapters.sanitize import sanitize_payload
 
 from .actions import action_bytes, dispatch_action, result_bytes, validate_action
 from .authority import (
@@ -18,7 +19,7 @@ from .authority import (
     transcript_key_for_authority,
 )
 from .manifests import Manifest, build_manifest
-from .observations import error_observation, is_terminated, sanitize_release_status
+from .observations import is_terminated, sanitize_release_status
 from .protocol import ENVIRONMENT_VERSION, EnvironmentError
 from .transcripts import Transcript, bounded_result_digest, canonical_arguments_digest
 
@@ -67,12 +68,54 @@ class IncidentEnv:
     def _status_observation(self) -> dict[str, Any]:
         if self._client is None:
             raise EnvironmentError("environment is not reset")
-        try:
-            status = self._client.release_status()
-        except ToolError as exc:
-            return error_observation("release.status", f"{exc.code}: {exc}")
+        status = self._client.release_status()
         self._last_status = status
         return sanitize_release_status(status)
+
+    def _gateway_unavailable_step(
+        self,
+        *,
+        tool: str,
+        arguments: dict[str, Any],
+        req_bytes: int,
+    ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        raw_result = {
+            "error": {
+                "code": "gateway_unavailable",
+                "message": "gateway unavailable",
+            }
+        }
+        resp_bytes = result_bytes(raw_result)
+        self._total_bytes += req_bytes + resp_bytes
+        status = {
+            "error": raw_result["error"],
+            "last_tool": tool,
+            "incident": "open",
+            "public_canary": "green_once",
+        }
+        info: dict[str, Any] = {
+            "tool": tool,
+            "response": sanitize_payload(raw_result),
+            "response_digest": bounded_result_digest(raw_result),
+            "action_count": self._action_count,
+            "total_bytes": self._total_bytes,
+        }
+        self._transcript.add_step(
+            sequence=self._sequence,
+            tick=0,
+            tool=tool,
+            arguments_digest=canonical_arguments_digest(arguments),
+            success_code="gateway_unavailable",
+            result_digest=bounded_result_digest(raw_result),
+            reward_delta=0.0,
+            terminated=False,
+            truncated=True,
+            cumulative_action_count=self._action_count,
+            request_bytes=req_bytes,
+            response_bytes=resp_bytes,
+        )
+        self._ended = True
+        return status, 0.0, False, True, info
 
     def reset(
         self,
@@ -140,6 +183,10 @@ class IncidentEnv:
         self._sequence += 1
         req_bytes = action_bytes(action) if isinstance(action, dict) else 0
         success_code = "ok"
+        tool = action.get("tool", "unknown") if isinstance(action, dict) else "unknown"
+        arguments = action.get("arguments") if isinstance(action, dict) else {}
+        if not isinstance(arguments, dict):
+            arguments = {}
         try:
             tool, arguments = validate_action(action)
             if (
@@ -160,18 +207,27 @@ class IncidentEnv:
         except EnvironmentError as exc:
             raw_result = {"error": {"code": exc.code, "message": str(exc)}}
             success_code = exc.code
-            tool = action.get("tool", "unknown") if isinstance(action, dict) else "unknown"
-            arguments = action.get("arguments") if isinstance(action, dict) else {}
-            if not isinstance(arguments, dict):
-                arguments = {}
+        except (ToolError, OSError, BrokenPipeError):
+            return self._gateway_unavailable_step(
+                tool=str(tool),
+                arguments=arguments,
+                req_bytes=req_bytes,
+            )
+        try:
+            status = self._status_observation()
+        except (ToolError, OSError, BrokenPipeError):
+            return self._gateway_unavailable_step(
+                tool=str(tool),
+                arguments=arguments,
+                req_bytes=req_bytes,
+            )
         resp_bytes = result_bytes(raw_result)
         self._total_bytes += req_bytes + resp_bytes
 
-        status = self._status_observation()
         if isinstance(raw_result, dict) and "error" in raw_result:
             status["error"] = raw_result["error"]
             status["last_tool"] = tool
-        terminated = is_terminated(status)
+        terminated = tool == "release.status" and is_terminated(status)
         truncated = False
         if not terminated:
             if self._max_steps is not None and self._action_count >= self._max_steps:
@@ -187,6 +243,7 @@ class IncidentEnv:
         reward = 0.0
         info: dict[str, Any] = {
             "tool": tool,
+            "response": sanitize_payload(raw_result),
             "response_digest": bounded_result_digest(raw_result),
             "action_count": self._action_count,
             "total_bytes": self._total_bytes,

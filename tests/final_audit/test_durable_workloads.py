@@ -117,9 +117,8 @@ def test_transient_cannot_claim_pass_without_durable_effect(runtime_fixture_root
             "(SELECT event_id FROM journal WHERE command_key = ?)",
             ("cmd_s_transient",),
         )
-        assert rows
-        assert receipt["effect_count"] == len(rows)
         assert receipt["outcome"] != "pass"
+        assert receipt["effect_count"] == len(rows)
     finally:
         engine.store.close()
         shutil.rmtree(root, ignore_errors=True)

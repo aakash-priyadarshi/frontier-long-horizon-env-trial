@@ -6,40 +6,9 @@ from pathlib import Path
 import pytest
 
 from agent_surface.runtime import RuntimeStore
-from training_ground.policies import SETTINGS, valid_repair_policy
+from training_ground.policies import INTENT_OUTBOX_FLOW, SETTINGS, valid_repair_policy
 
 from tests.final_audit.conftest import execute_policy, fresh_runtime_engine
-
-
-INTENT_OUTBOX_FLOW = """from __future__ import annotations
-
-def s1(command, store): return store.prepare(command)
-
-def s2(command, store):
-    existing = store.get_event_id(command.get("command_key"), command.get("occurrence_id"))
-    return existing if existing else store.append(command)
-
-def s3(command, event_id, store): store.register(command, event_id)
-
-def s4(event_id, store): return store.load(event_id)
-
-def s5(event, store):
-    intent = store.get_intent(event["event_id"])
-    if intent and intent["state"] == "completed":
-        return intent["effect_id"]
-    intent_id = intent["intent_id"] if intent else store.intent_create(
-        event["event_id"], event["command_key"], event["occurrence_id"]
-    )
-    existing = store.effect_exists(event["event_id"])
-    if existing:
-        store.intent_complete(intent_id, existing)
-        return existing
-    effect_id = store.settle(event)
-    store.intent_complete(intent_id, effect_id)
-    return effect_id
-
-def s6(sequence, store): store.advance(sequence)
-"""
 
 
 ATOMIC_REGISTRATION_PROGRESS_FLOW = """from __future__ import annotations
@@ -55,12 +24,13 @@ def s3(command, event_id, store): store.register(command, event_id)
 def s4(event_id, store): return store.load(event_id)
 
 def s5(event, store):
-    existing = store.effect_exists(event["event_id"])
+    key = event.get("logical_effect_key", "settlement")
+    existing = store.effect_by_key(event["event_id"], key)
     if existing:
-        store.mark_event(event["event_id"], "settled")
+        store.mark_event(event["event_id"], "settlement_replayed", key)
         return existing
     effect_id = store.settle(event)
-    store.mark_event(event["event_id"], "settled")
+    store.mark_event(event["event_id"], "settlement_committed", key)
     return effect_id
 
 def s6(sequence, store): store.advance(sequence)
@@ -95,12 +65,13 @@ def test_stable_logical_effect_identity(runtime_fixture_root: Path) -> None:
     runtime, engine, root = _runtime(runtime_fixture_root)
     try:
         event = _event(runtime)
-        first = runtime.settle(
-            event, logical_effect_id="settlement:occ-1", kind="settlement"
-        )
-        second = runtime.settle(
-            event, logical_effect_id="settlement:occ-1", kind="settlement"
-        )
+        event["logical_effect_key"] = "settlement:occ-1"
+        first = runtime.effect_by_key(event["event_id"], event["logical_effect_key"])
+        if first is None:
+            first = runtime.settle(event)
+        second = runtime.effect_by_key(event["event_id"], event["logical_effect_key"])
+        if second is None:
+            second = runtime.settle(event)
         assert first == second
     finally:
         engine.store.close()
@@ -111,14 +82,16 @@ def test_multiple_legitimate_effects_for_one_event(runtime_fixture_root: Path) -
     runtime, engine, root = _runtime(runtime_fixture_root)
     try:
         event = _event(runtime)
-        first = runtime.settle(event, logical_effect_id="charge:occ-1", kind="charge")
-        second = runtime.settle(event, logical_effect_id="receipt:occ-1", kind="receipt")
+        event["logical_effect_key"] = "charge:occ-1"
+        first = runtime.settle(event)
+        event["logical_effect_key"] = "receipt:occ-1"
+        second = runtime.settle(event)
         assert first != second
         rows = engine.store.rows(
-            "SELECT kind FROM effects WHERE source_event_id = ? ORDER BY kind",
+            "SELECT logical_effect_key FROM effects WHERE source_event_id = ? ORDER BY logical_effect_key",
             (event["event_id"],),
         )
-        assert rows == [("charge",), ("receipt",)]
+        assert rows == [("charge:occ-1",), ("receipt:occ-1",)]
     finally:
         engine.store.close()
         shutil.rmtree(root, ignore_errors=True)
@@ -128,10 +101,11 @@ def test_replay_same_logical_effect_does_not_duplicate(runtime_fixture_root: Pat
     runtime, engine, root = _runtime(runtime_fixture_root)
     try:
         event = _event(runtime)
+        event["logical_effect_key"] = "settlement:occ-1"
         for _ in range(3):
-            runtime.settle(
-                event, logical_effect_id="settlement:occ-1", kind="settlement"
-            )
+            existing = runtime.effect_by_key(event["event_id"], event["logical_effect_key"])
+            if existing is None:
+                runtime.settle(event)
         rows = engine.store.rows(
             "SELECT effect_id FROM effects WHERE source_event_id = ?",
             (event["event_id"],),

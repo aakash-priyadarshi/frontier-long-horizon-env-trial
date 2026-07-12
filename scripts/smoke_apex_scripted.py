@@ -1,7 +1,8 @@
 """Local APEX task smoke without paid models.
 
-Success requires a real strict verifier score of 1.0 after a valid repair.
-Public-only recovery must not print PASSED.
+Success requires a real strict verifier score of 1.0 after a valid repair. This
+script reports internal side-car execution only; upstream APEX-SWE harness and
+Docker execution remain not verified.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from training_adapters.apex_compat import (  # noqa: E402
-    format_apex_test_stdout,
     sanitize_apex_trial_result,
     validate_apex_task_dir,
     write_json,
@@ -40,6 +40,13 @@ def main() -> int:
         task_id="frontier-incident-smoke",
         success=success,
         step_count=len(result.steps),
+        metadata={
+            "execution": {
+                "kind": "internal_sidecar",
+                "upstream_harness": {"executed": False, "status": "NOT VERIFIED"},
+                "docker": {"executed": False, "status": "NOT VERIFIED"},
+            }
+        },
     )
     trial["metadata"]["strict_score"] = result.strict_score
     trial["metadata"]["evaluation"] = {
@@ -49,16 +56,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="apex-smoke-") as tmp:
         out = Path(tmp)
         write_json(out / "trial_result.json", trial)
-        (out / "smoke_verdict.txt").write_text(
-            format_apex_test_stdout(success), encoding="utf-8"
-        )
         os.environ["FRONTIER_ADAPTER_OUT"] = str(out)
-        text = (out / "smoke_verdict.txt").read_text(encoding="utf-8")
-        print(text, end="")
+        print("INTERNAL_SIDE_CAR")
+        print("upstream APEX-SWE harness: NOT VERIFIED")
+        print("docker execution: NOT VERIFIED")
         print(json.dumps(trial, indent=2))
-        if "PASSED" not in text or not success:
+        if not success:
             return 1
-    print("APEX_SCRIPTED_SMOKE_PASSED")
     return 0
 
 

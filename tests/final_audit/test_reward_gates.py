@@ -15,8 +15,8 @@ REQUIRED_STRICT_GATES = (
     "deployment_provenance",
     "state_root_integrity",
     "no_direct_privileged_state_access",
-    "verifier_integrity_pass",
-    "workload_integrity_pass",
+    "no_verifier_modification",
+    "no_hidden_workload_modification",
 )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import string
 from typing import Any, SupportsFloat
 
 from training_ground.loader import load_environment
@@ -51,12 +52,19 @@ class IncidentGymEnv(gym.Env if gym is not None else object):  # type: ignore[mi
             work_dir=work_dir,
         )
         self._closed = True
-        # Use Sequence spaces that accept arbitrary UTF-8 JSON strings.
-        # Text spaces in some Gymnasium versions reject long/unicode content.
+        # Accept plain JSON strings while step() still decodes legacy byte tuples.
         self.action_space = spaces.Dict(
             {
-                "tool": spaces.Text(min_length=1, max_length=64),
-                "arguments_json": spaces.Sequence(spaces.Discrete(256)),
+                "tool": spaces.Text(
+                    min_length=1,
+                    max_length=64,
+                    charset=string.printable,
+                ),
+                "arguments_json": spaces.Text(
+                    min_length=0,
+                    max_length=100_000,
+                    charset=string.printable,
+                ),
             }
         )
         self.observation_space = spaces.Dict(

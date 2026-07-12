@@ -56,6 +56,9 @@ using `training_adapters.apex_compat` and writes APEX-style `result.json` and
 This is **not** evidence of a real upstream `apx run` or model-driven APEX harness
 execution. Current APEX status is task-pack compatibility plus side-car smoke only.
 
+upstream apex-swe harness: **not verified**
+docker execution: **not verified**
+
 ## Scoring note
 
 APEX smoke tasks are compatibility checks. Strict success comes only from

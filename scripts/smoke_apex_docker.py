@@ -1,4 +1,4 @@
-"""Docker smoke for the APEX task pack. Skips cleanly when Docker is unavailable."""
+"""Docker smoke for the APEX task pack."""
 
 from __future__ import annotations
 
@@ -26,8 +26,16 @@ def docker_available() -> bool:
 
 def main() -> int:
     if not docker_available():
-        print(json.dumps({"status": "SKIPPED", "reason": "docker daemon unavailable"}))
-        print("APEX_DOCKER_SMOKE_SKIPPED")
+        print(
+            json.dumps(
+                {
+                    "status": "NOT VERIFIED",
+                    "executed": False,
+                    "reason": "docker daemon unavailable",
+                }
+            )
+        )
+        print("APEX_DOCKER_SMOKE_NOT_VERIFIED")
         return 0
 
     # Build from repository root using the task Dockerfile.
