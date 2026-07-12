@@ -182,7 +182,11 @@ class ServiceFixture:
 
 def _copy_workspace(destination: Path) -> None:
     template = Path(__file__).parent / "public_template"
-    shutil.copytree(template, destination)
+    shutil.copytree(
+        template,
+        destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
 
 
 def _register_revisions(store: StateStore, source_root: str) -> None:

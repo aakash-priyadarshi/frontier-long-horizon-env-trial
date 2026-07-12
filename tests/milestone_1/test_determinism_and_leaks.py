@@ -158,14 +158,14 @@ def test_authority_key_and_fixture_scope_are_not_persisted_or_public(fixtures) -
     for fixture, key, scope in zip(fixtures, TEST_KEYS, TEST_SCOPES, strict=True):
         database_text = "\n".join(fixture.store.connection.iterdump()).lower()
         public_text = fixture.public_bytes().decode("utf-8").lower()
-        workspace_text = "\n".join(
-            path.read_text(encoding="utf-8")
+        workspace_bytes = b"\n".join(
+            path.read_bytes()
             for path in fixture.workspace.rglob("*")
             if path.is_file()
         ).lower()
         assert key.hex() not in database_text
         assert key.hex() not in public_text
-        assert key.hex() not in workspace_text
+        assert key not in workspace_bytes
         assert scope.lower() not in database_text
         assert scope.lower() not in public_text
-        assert scope.lower() not in workspace_text
+        assert scope.lower().encode("utf-8") not in workspace_bytes
