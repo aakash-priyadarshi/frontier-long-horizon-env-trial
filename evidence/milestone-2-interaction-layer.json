@@ -1,0 +1,407 @@
+{
+  "diagnostic_evidence": {
+    "A": {
+      "events": [
+        {
+          "effects": [
+            [
+              "efx_ed2dca7f38357b063cc007fadac7ea6d",
+              "occ_diagnostic",
+              100,
+              "settlement",
+              "evt_855e8d3e739c7120b7513407cae5be32",
+              110
+            ],
+            [
+              "efx_8a724162f558f8d6735d434816548076",
+              "occ_diagnostic",
+              100,
+              "settlement",
+              "evt_855e8d3e739c7120b7513407cae5be32",
+              113
+            ]
+          ],
+          "event_id": "evt_855e8d3e739c7120b7513407cae5be32",
+          "journal": [
+            [
+              1,
+              "evt_855e8d3e739c7120b7513407cae5be32",
+              "cmd_diagnostic",
+              "occ_diagnostic",
+              "b165c4ad911a2a67355976430611984db6194ae66c22074f6520d19b993cbf64",
+              106
+            ]
+          ]
+        }
+      ],
+      "keys": [
+        [
+          "cmd_diagnostic",
+          "occ_diagnostic",
+          "evt_855e8d3e739c7120b7513407cae5be32",
+          "registered"
+        ]
+      ],
+      "receipt": {
+        "alias": "s5",
+        "cursor_seq": 1,
+        "cutpoint": "s5.exit",
+        "effect_count": 2,
+        "end_tick": 114,
+        "event_count": 1,
+        "handle": "h_2d62fa807af1465a5c54698dd9850c96",
+        "net_effect_count": 200,
+        "outcome": "cutpoint",
+        "start_tick": 104,
+        "workload_id": "s5"
+      },
+      "trace_spans": 10,
+      "workload_id": "s5"
+    },
+    "B": {
+      "events": [
+        {
+          "effects": [
+            [
+              "efx_ef48b9550c5aa5de1193295dbd8eb7ec",
+              "occ_diagnostic",
+              100,
+              "settlement",
+              "evt_7c65294d7dbaf7f5cbb200eae2fee572",
+              113
+            ]
+          ],
+          "event_id": "evt_7c65294d7dbaf7f5cbb200eae2fee572",
+          "journal": [
+            [
+              1,
+              "evt_7c65294d7dbaf7f5cbb200eae2fee572",
+              "cmd_diagnostic",
+              "occ_diagnostic",
+              "a55b760a8a06837e4f49e9957e0f87ba0fe90c3b97cbef890c4070a114f8bf87",
+              106
+            ]
+          ]
+        },
+        {
+          "effects": [
+            [
+              "efx_3fe0a2d256cd86e56000f585a12cc566",
+              "occ_diagnostic",
+              100,
+              "settlement",
+              "evt_6bf0fd5388ac22d97dabab9782fcbdf6",
+              117
+            ]
+          ],
+          "event_id": "evt_6bf0fd5388ac22d97dabab9782fcbdf6",
+          "journal": [
+            [
+              2,
+              "evt_6bf0fd5388ac22d97dabab9782fcbdf6",
+              "cmd_diagnostic",
+              "occ_diagnostic",
+              "a55b760a8a06837e4f49e9957e0f87ba0fe90c3b97cbef890c4070a114f8bf87",
+              108
+            ]
+          ]
+        }
+      ],
+      "keys": [
+        [
+          "cmd_diagnostic",
+          "occ_diagnostic",
+          "evt_6bf0fd5388ac22d97dabab9782fcbdf6",
+          "registered"
+        ]
+      ],
+      "receipt": {
+        "alias": "s2",
+        "cursor_seq": 2,
+        "cutpoint": "s2.exit",
+        "effect_count": 2,
+        "end_tick": 118,
+        "event_count": 2,
+        "handle": "h_1db4758526b1e5dfc5d421de8800420d",
+        "net_effect_count": 200,
+        "outcome": "cutpoint",
+        "start_tick": 104,
+        "workload_id": "s2"
+      },
+      "trace_spans": 12,
+      "workload_id": "s2"
+    }
+  },
+  "git_sha_status": "tested-source-commit",
+  "leak_probe": {
+    "A": {
+      "passed": true,
+      "problems": []
+    },
+    "B": {
+      "passed": true,
+      "problems": []
+    }
+  },
+  "limitations": [
+    "Agent-visible runtime uses a deterministic workload engine with the candidate configuration; arbitrary source execution is deferred to later verifier integration.",
+    "Network access is not required by the runtime and is not tested here.",
+    "Long-horizon and model-evaluation claims remain outside Milestone 2."
+  ],
+  "milestone": "milestone-2-agent-interaction-layer",
+  "public_flow": {
+    "A": {
+      "P1": {
+        "alias": "P1",
+        "cursor_seq": 1,
+        "cutpoint": null,
+        "effect_count": 1,
+        "end_tick": 60,
+        "event_count": 1,
+        "handle": "h_828cc475317109cff9d24e07b5aca51e",
+        "net_effect_count": 100,
+        "outcome": "pass",
+        "start_tick": 48,
+        "workload_id": "P1"
+      },
+      "P2": {
+        "alias": "P2",
+        "cursor_seq": 2,
+        "cutpoint": null,
+        "effect_count": 1,
+        "end_tick": 72,
+        "event_count": 1,
+        "handle": "h_c3ee9bbb8c4e4950146e67e9f3be0dae",
+        "net_effect_count": 100,
+        "outcome": "pass",
+        "start_tick": 60,
+        "workload_id": "P2"
+      },
+      "P3": {
+        "alias": "P3",
+        "cursor_seq": 5,
+        "cutpoint": null,
+        "effect_count": 3,
+        "end_tick": 99,
+        "event_count": 3,
+        "handle": "h_37039379c82b9356bd57ad555fa757d5",
+        "net_effect_count": 300,
+        "outcome": "pass",
+        "start_tick": 72,
+        "workload_id": "P3"
+      },
+      "final_status": {
+        "active_config_root": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+        "active_revision": "candidate",
+        "active_source_root": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+        "attempt_budget": 1,
+        "candidate_root": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+        "incident": "closed",
+        "intake": "open",
+        "public_canary": "pass",
+        "public_canary_receipts": [
+          {
+            "alias": "P1",
+            "cursor_seq": 1,
+            "cutpoint": null,
+            "effect_count": 1,
+            "end_tick": 60,
+            "event_count": 1,
+            "handle": "h_828cc475317109cff9d24e07b5aca51e",
+            "net_effect_count": 100,
+            "outcome": "pass",
+            "start_tick": 48,
+            "workload_id": "P1"
+          },
+          {
+            "alias": "P2",
+            "cursor_seq": 2,
+            "cutpoint": null,
+            "effect_count": 1,
+            "end_tick": 72,
+            "event_count": 1,
+            "handle": "h_c3ee9bbb8c4e4950146e67e9f3be0dae",
+            "net_effect_count": 100,
+            "outcome": "pass",
+            "start_tick": 60,
+            "workload_id": "P2"
+          },
+          {
+            "alias": "P3",
+            "cursor_seq": 5,
+            "cutpoint": null,
+            "effect_count": 3,
+            "end_tick": 99,
+            "event_count": 3,
+            "handle": "h_37039379c82b9356bd57ad555fa757d5",
+            "net_effect_count": 300,
+            "outcome": "pass",
+            "start_tick": 72,
+            "workload_id": "P3"
+          }
+        ],
+        "session_id": "session_d41cbae00b43f025e5aea1aa",
+        "tick": 101,
+        "tool_inventory": [
+          "release.status",
+          "workspace.read",
+          "workspace.edit",
+          "telemetry.logs",
+          "telemetry.trace",
+          "state.inspect",
+          "runtime.run",
+          "recovery.pause",
+          "recovery.restore",
+          "release.rollback",
+          "release.deploy",
+          "recovery.resume"
+        ]
+      }
+    },
+    "B": {
+      "P1": {
+        "alias": "P1",
+        "cursor_seq": 1,
+        "cutpoint": null,
+        "effect_count": 1,
+        "end_tick": 60,
+        "event_count": 1,
+        "handle": "h_828cc475317109cff9d24e07b5aca51e",
+        "net_effect_count": 100,
+        "outcome": "pass",
+        "start_tick": 48,
+        "workload_id": "P1"
+      },
+      "P2": {
+        "alias": "P2",
+        "cursor_seq": 2,
+        "cutpoint": null,
+        "effect_count": 1,
+        "end_tick": 72,
+        "event_count": 1,
+        "handle": "h_c3ee9bbb8c4e4950146e67e9f3be0dae",
+        "net_effect_count": 100,
+        "outcome": "pass",
+        "start_tick": 60,
+        "workload_id": "P2"
+      },
+      "P3": {
+        "alias": "P3",
+        "cursor_seq": 5,
+        "cutpoint": null,
+        "effect_count": 3,
+        "end_tick": 99,
+        "event_count": 3,
+        "handle": "h_37039379c82b9356bd57ad555fa757d5",
+        "net_effect_count": 300,
+        "outcome": "pass",
+        "start_tick": 72,
+        "workload_id": "P3"
+      },
+      "final_status": {
+        "active_config_root": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+        "active_revision": "candidate",
+        "active_source_root": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+        "attempt_budget": 1,
+        "candidate_root": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+        "incident": "closed",
+        "intake": "open",
+        "public_canary": "pass",
+        "public_canary_receipts": [
+          {
+            "alias": "P1",
+            "cursor_seq": 1,
+            "cutpoint": null,
+            "effect_count": 1,
+            "end_tick": 60,
+            "event_count": 1,
+            "handle": "h_828cc475317109cff9d24e07b5aca51e",
+            "net_effect_count": 100,
+            "outcome": "pass",
+            "start_tick": 48,
+            "workload_id": "P1"
+          },
+          {
+            "alias": "P2",
+            "cursor_seq": 2,
+            "cutpoint": null,
+            "effect_count": 1,
+            "end_tick": 72,
+            "event_count": 1,
+            "handle": "h_c3ee9bbb8c4e4950146e67e9f3be0dae",
+            "net_effect_count": 100,
+            "outcome": "pass",
+            "start_tick": 60,
+            "workload_id": "P2"
+          },
+          {
+            "alias": "P3",
+            "cursor_seq": 5,
+            "cutpoint": null,
+            "effect_count": 3,
+            "end_tick": 99,
+            "event_count": 3,
+            "handle": "h_37039379c82b9356bd57ad555fa757d5",
+            "net_effect_count": 300,
+            "outcome": "pass",
+            "start_tick": 72,
+            "workload_id": "P3"
+          }
+        ],
+        "session_id": "session_d41cbae00b43f025e5aea1aa",
+        "tick": 101,
+        "tool_inventory": [
+          "release.status",
+          "workspace.read",
+          "workspace.edit",
+          "telemetry.logs",
+          "telemetry.trace",
+          "state.inspect",
+          "runtime.run",
+          "recovery.pause",
+          "recovery.restore",
+          "release.rollback",
+          "release.deploy",
+          "recovery.resume"
+        ]
+      }
+    }
+  },
+  "required_checks": {
+    "correct_tool_count": true,
+    "incident_closed_after_resume": true,
+    "leak_checks_pass": true,
+    "public_receipts_equal": true,
+    "receipt_fields_safe": true,
+    "service_state_diverges_after_diagnostics": true,
+    "snapshot_authenticated": true
+  },
+  "schema_version": 2,
+  "semantic_roots": {
+    "A": {
+      "audit": "ca2e8125af71733a988ffd5eef0203100277477b07c642c56011d3a0736cdf36",
+      "deployment": "04be83220fb58545ca4acacb67bc01218136862801ef4b6b3bba50da65852035",
+      "runtime": "55952d2858798b55dc21717dc91b97c915f44cc8dc8fc949c15bfb9b50da7852",
+      "service_state": "adde23d1d6d800d6b34b28c5d26799dab343f51825ff482e19cafd59954d67f2",
+      "snapshot": "966ce7c5d161b6daa831c4137802587785382594938d85eee2e9270912b9072a",
+      "telemetry": "bf95a51243adb28d1e841a451484f9dce95c136a9ab2aa47434fe0ed090171c8"
+    },
+    "B": {
+      "audit": "0f56b462bfe29331751599698e45f9288c80c521c3b8ca21d5c06757f987010b",
+      "deployment": "04be83220fb58545ca4acacb67bc01218136862801ef4b6b3bba50da65852035",
+      "runtime": "59158cf49f51a852f3a904e4983028c8e1a3133adee6b5e1f089f77d5bdb8ebf",
+      "service_state": "4a6ace71e6b5e80afd36c6355be9e782e89dd5eb377b88b02551444f5a1f9f83",
+      "snapshot": "966ce7c5d161b6daa831c4137802587785382594938d85eee2e9270912b9072a",
+      "telemetry": "cf2b703a9913f08c8643352a8480beb6ab157dc8ae0da6042c7c6896e067b2ab"
+    }
+  },
+  "tested_source_commit": "8da69b57bcd759481cf88c9d18dbc6d75e4fba35",
+  "timestamp": "2026-07-12T05:31:48.075Z",
+  "verification": {
+    "command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe scripts\\verify_milestone_2.py --output evidence\\milestone-2-interaction-layer.json",
+    "outcome": "pass",
+    "pytest_command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe -m pytest tests/milestone_2 -q",
+    "python_version": "3.12.13",
+    "test_count": 16
+  }
+}
