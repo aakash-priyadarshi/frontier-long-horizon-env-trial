@@ -74,8 +74,8 @@
       "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55"
     }
   },
-  "tested_source_commit": "ba8d5e1b166034aae59f4309a569f403328785e6",
-  "timestamp": "2026-07-12T07:28:45.358Z",
+  "tested_source_commit": "d513cf57988a8da819ba88561fc874911af4ffe5",
+  "timestamp": "2026-07-12T10:51:52.573Z",
   "verification": {
     "command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe scripts\\verify_milestone_1.py",
     "outcome": "pass",
