@@ -7,7 +7,8 @@ public artifacts and distinct privileged histories.
 
 ## Current status
 
-**Milestone 1 audit fixes implemented, awaiting targeted re-audit.**
+**Milestone 1 closed after targeted re-audit. Milestone 2 interaction-layer
+implementation is explicitly approved.**
 
 The repository currently provides:
 
@@ -86,4 +87,4 @@ The implemented root boundaries are documented in
 - Claims must be supported by reproducible evidence.
 - The public workspace must not disclose its privileged fixture selection.
 - Implementation work advances only through reviewed milestones.
-- Milestone 2 has not begun and remains gated on targeted re-audit.
+- Milestone 2 interaction-layer work may begin under the approved milestone scope.

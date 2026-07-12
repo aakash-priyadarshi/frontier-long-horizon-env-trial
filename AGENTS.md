@@ -25,23 +25,20 @@ proceeds only through explicitly approved milestones.
 
 ## Current stage
 
-**Current stage: Milestone 1 audit fixes implemented, awaiting targeted re-audit.**
+**Current stage: Milestone 1 closed. Milestone 2 interaction-layer implementation explicitly approved.**
 
 ### Allowed
 
-- Reproduce and audit Milestone 1.
-- Fix confirmed Milestone 1 issues after review.
-- Improve tests and receipts related to Milestone 1.
+- Milestone 2 agent-visible interaction-layer implementation within the approved scope.
+- Focused Milestone 2 tests and receipts.
+- Reproduce Milestone 1 verification as a regression baseline.
 
 ### Not allowed yet
 
-- Milestone 2 tool or workload implementation.
-- Hidden verifier implementation.
+- Hidden verifier implementation beyond what Milestone 2 explicitly requires.
 - Model evaluation.
 - Unsupported isolation or performance claims.
-
-Milestone 2 must not begin until the independent Milestone 1 audit has been reviewed
-and the next milestone has been explicitly approved.
+- Broadening into later milestones without explicit approval.
 
 ## Originality and IP
 
@@ -248,5 +245,6 @@ Every milestone follows this sequence:
 7. Review the audit and fix confirmed issues within the same milestone.
 8. Record remaining limitations and obtain explicit approval before advancing.
 
-No later milestone begins automatically after tests pass. The current gate remains:
-review the independent Milestone 1 adversarial audit before authorising Milestone 2.
+No later milestone begins automatically after tests pass. Milestone 1 is closed after
+targeted re-audit. The current authorised work is Milestone 2 interaction-layer
+implementation only.
