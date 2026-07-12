@@ -1,64 +1,86 @@
 {
-  "schema_version": 1,
-  "milestone": "milestone-1-substrate",
-  "git_sha": "5f14840dceb8bee95063bbbdb755fe4133ae999d",
+  "authenticated_snapshot_checks": {
+    "authenticated_restore_valid": true,
+    "authentication_tag_modification_rejected": true,
+    "cross_fixture_substitution_rejected": true,
+    "direct_mutation_plus_audit_rejected": true,
+    "forged_snapshot_rejected": true,
+    "initial_snapshots_authenticated": true,
+    "payload_modification_rejected": true
+  },
   "git_sha_status": "tested-source-commit",
-  "python_version": "3.12.13",
-  "test": {
-    "command": ".\\.venv\\Scripts\\python.exe -m pytest tests\\milestone_1 -q",
-    "count": 11,
-    "outcome": "pass"
+  "limitations": [
+    "Local HMAC authentication is not production OS or container isolation.",
+    "Future agent-mount isolation is NOT VERIFIED; privileged builder package source, fixture databases, audit receipts, tests, and key material must not be mounted.",
+    "Agent tools, hidden grading, workload controls, and model evaluation remain outside Milestone 1."
+  ],
+  "milestone": "milestone-1-substrate-hardened",
+  "public_equality": {
+    "channel_equality": {
+      "logs": true,
+      "public_bytes_sha256": true,
+      "public_roots": true,
+      "revision_diff": true,
+      "status": true,
+      "ticket": true,
+      "visible_exception": true,
+      "workspace_manifest": true
+    },
+    "enumerated_channels": [
+      "logs",
+      "public_bytes_sha256",
+      "public_roots",
+      "revision_diff",
+      "status",
+      "ticket",
+      "visible_exception",
+      "workspace_manifest"
+    ],
+    "fixture_process_metadata_inputs_absent": true,
+    "receipt_fields_safe": true,
+    "secondary_forbidden_token_scan": true,
+    "service_state_diverges": true,
+    "shared_root_equality": {
+      "audit": true,
+      "config": true,
+      "deployment": true,
+      "runtime": true,
+      "snapshot": true,
+      "source": true,
+      "telemetry": true
+    },
+    "workspace_file_count": 5
   },
-  "deterministic_roots": {
+  "schema_version": 2,
+  "semantic_roots": {
     "A": {
-      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
-      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
-      "state": "b6b847247a92e04df264749f611551169f5a4d614fc793d24565165e51f51d5e",
-      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55",
       "audit": "3ec65bc55700f62f22edc15df05c41108b7c92b388f0707e69fb52a082d44b96",
-      "snapshot": "38db84092851dcc3451140fa2b51c33e59ef39fe7e2bcb2cdceaf410b50bd021"
+      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+      "deployment": "0e8160fbe92ee96091a5050f552a5be3b070b124fab05aeb54d0d5a685c3c703",
+      "runtime": "b3dbd04c914341df297b308a0d653a227cae176b4bbe1f6c01f0ede530bd5fc6",
+      "service_state": "fd1c8eab3c064533c0b201d8091d26699f4b1655195d447624483425f4556d79",
+      "snapshot": "966ce7c5d161b6daa831c4137802587785382594938d85eee2e9270912b9072a",
+      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55"
     },
     "B": {
-      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
-      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
-      "state": "5ce105dc24f14a431b9526a3592dbf6793d145cb5e92e5b9e67234f7d1c69a00",
-      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55",
       "audit": "3ec65bc55700f62f22edc15df05c41108b7c92b388f0707e69fb52a082d44b96",
-      "snapshot": "38db84092851dcc3451140fa2b51c33e59ef39fe7e2bcb2cdceaf410b50bd021"
+      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+      "deployment": "0e8160fbe92ee96091a5050f552a5be3b070b124fab05aeb54d0d5a685c3c703",
+      "runtime": "b3dbd04c914341df297b308a0d653a227cae176b4bbe1f6c01f0ede530bd5fc6",
+      "service_state": "8c7c5ef6b7effe106d8acfce560f0dee3ce8d4defdc931125d480f4d582fc777",
+      "snapshot": "966ce7c5d161b6daa831c4137802587785382594938d85eee2e9270912b9072a",
+      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55"
     }
   },
-  "shared_equality_checks": {
-    "workspace_bytes": true,
-    "visible_logs": true,
-    "revision_diff": true,
-    "source_root": true,
-    "config_root": true,
-    "telemetry_root": true,
-    "audit_root": true,
-    "snapshot_root": true
-  },
-  "snapshot_restoration": {
-    "A": {
-      "restored_root": "65bea66fe35b2e6d0d0af5c00673dbcb84aca51862f4cfe660e00374c5962cab",
-      "matches_signed_S0": true,
-      "telemetry_preserved": true,
-      "audit_appended": true,
-      "audit_chain_valid": true
-    },
-    "B": {
-      "restored_root": "65bea66fe35b2e6d0d0af5c00673dbcb84aca51862f4cfe660e00374c5962cab",
-      "matches_signed_S0": true,
-      "telemetry_preserved": true,
-      "audit_appended": true,
-      "audit_chain_valid": true
-    }
-  },
-  "leak_check": {
-    "public_surface_selector_absent": true,
-    "environment_variable_selector_absent": true,
-    "process_argument_selector_absent": true,
-    "receipt_privileged_causal_values_absent": true,
-    "passed": true
-  },
-  "timestamp": "2026-07-12T03:33:02.381Z"
+  "tested_source_commit": "dd7e4acf36b6585735ec07045a9a25455eb51df2",
+  "timestamp": "2026-07-12T04:18:59.972Z",
+  "verification": {
+    "command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe scripts\\verify_milestone_1.py",
+    "outcome": "pass",
+    "pytest_command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
+    "python_version": "3.12.13",
+    "test_count": 27
+  }
 }
