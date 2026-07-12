@@ -31,6 +31,11 @@ The repository currently provides:
 - one-command verifiers that rerun tests and regenerate evidence receipts from
   fresh fixtures.
 
+Training/APEX interoperability adapters live under `src/training_adapters/` and
+`integrations/apex_swe/` (see `docs/training-adapters.md`). They wrap the twelve-tool
+gateway for Gymnasium rollouts and APEX-SWE task packaging without changing the
+hidden verifier or evidence receipts.
+
 The hidden verifier, full workload suite, solution controls, container runtime,
 and model evaluations are intentionally deferred to later approved milestones.
 

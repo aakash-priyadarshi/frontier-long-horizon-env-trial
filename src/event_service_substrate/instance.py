@@ -187,6 +187,11 @@ def _copy_workspace(destination: Path) -> None:
         destination,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    # Normalize text templates to LF so Windows checkouts with CRLF still match
+    # the canonical deployment artifacts used by build_fixture.
+    settings_path = destination / CONFIG_FILE
+    if settings_path.is_file():
+        settings_path.write_bytes(settings_path.read_bytes().replace(b"\r\n", b"\n"))
 
 
 def _register_revisions(store: StateStore, source_root: str) -> None:

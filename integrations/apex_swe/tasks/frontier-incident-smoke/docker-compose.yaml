@@ -1,0 +1,12 @@
+services:
+  client:
+    build:
+      context: ../../../../
+      dockerfile: integrations/apex_swe/tasks/frontier-incident-smoke/Dockerfile
+    working_dir: /app
+    command: ["python", "/app/integrations/apex_swe/tasks/frontier-incident-smoke/scripted_agent.py"]
+    environment:
+      - PYTHONPATH=/app/src
+      - FRONTIER_ADAPTER_FIXTURE_INDEX=0
+    volumes:
+      - ${APEX_TASK_LOGS_PATH:-./logs}:${APEX_CONTAINER_LOGS_PATH:-/logs}

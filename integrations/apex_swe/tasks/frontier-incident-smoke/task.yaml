@@ -1,0 +1,25 @@
+instruction: |
+  You are repairing a deterministic event-settlement incident service through a
+  JSON-lines tool gateway. You may call only these twelve tools:
+
+  - release.status
+  - workspace.read
+  - workspace.edit
+  - telemetry.logs
+  - telemetry.trace
+  - state.inspect
+  - runtime.run
+  - recovery.pause
+  - recovery.restore
+  - release.rollback
+  - release.deploy
+  - recovery.resume
+
+  Do not attempt shell, network, package installs, or filesystem access outside
+  the gateway. Restore safe operation so public workloads P1, P2, and P3 pass
+  under a deployed candidate and intake can resume with the incident closed.
+
+  For local smoke evaluation without a paid model, the packaged scripted policy
+  executes the public recovery path and writes a machine-readable receipt.
+max_agent_timeout_sec: 600
+max_test_timeout_sec: 120
