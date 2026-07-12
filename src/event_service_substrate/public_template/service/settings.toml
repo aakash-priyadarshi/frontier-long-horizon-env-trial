@@ -1,0 +1,5 @@
+[service]
+intake_enabled = true
+settlement_enabled = true
+attempt_budget = 1
+transient_behavior = "retry"

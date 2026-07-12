@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "milestone": "milestone-1-substrate",
+  "git_sha": null,
+  "git_sha_status": "not-a-git-repository",
+  "python_version": "3.12.13",
+  "test": {
+    "command": ".\\.venv\\Scripts\\python.exe -m pytest tests\\milestone_1 -q",
+    "count": 11,
+    "outcome": "pass"
+  },
+  "deterministic_roots": {
+    "A": {
+      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+      "state": "b6b847247a92e04df264749f611551169f5a4d614fc793d24565165e51f51d5e",
+      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55",
+      "audit": "3ec65bc55700f62f22edc15df05c41108b7c92b388f0707e69fb52a082d44b96",
+      "snapshot": "38db84092851dcc3451140fa2b51c33e59ef39fe7e2bcb2cdceaf410b50bd021"
+    },
+    "B": {
+      "source": "ac5f472a8042a58b5ddaf451cfb6db6acd00d43e7e3814a052a672fe27a6057f",
+      "config": "39980f058a012bca5c50f8fdccd72b767e9568a60cda01e2fd5c8b47074043ed",
+      "state": "5ce105dc24f14a431b9526a3592dbf6793d145cb5e92e5b9e67234f7d1c69a00",
+      "telemetry": "0833855910732cd9eba06be288d84ca80dfd0eead3e82df40efb1c9ad8cd4d55",
+      "audit": "3ec65bc55700f62f22edc15df05c41108b7c92b388f0707e69fb52a082d44b96",
+      "snapshot": "38db84092851dcc3451140fa2b51c33e59ef39fe7e2bcb2cdceaf410b50bd021"
+    }
+  },
+  "shared_equality_checks": {
+    "workspace_bytes": true,
+    "visible_logs": true,
+    "revision_diff": true,
+    "source_root": true,
+    "config_root": true,
+    "telemetry_root": true,
+    "audit_root": true,
+    "snapshot_root": true
+  },
+  "snapshot_restoration": {
+    "A": {
+      "restored_root": "65bea66fe35b2e6d0d0af5c00673dbcb84aca51862f4cfe660e00374c5962cab",
+      "matches_signed_S0": true,
+      "telemetry_preserved": true,
+      "audit_appended": true,
+      "audit_chain_valid": true
+    },
+    "B": {
+      "restored_root": "65bea66fe35b2e6d0d0af5c00673dbcb84aca51862f4cfe660e00374c5962cab",
+      "matches_signed_S0": true,
+      "telemetry_preserved": true,
+      "audit_appended": true,
+      "audit_chain_valid": true
+    }
+  },
+  "leak_check": {
+    "public_surface_selector_absent": true,
+    "environment_variable_selector_absent": true,
+    "process_argument_selector_absent": true,
+    "receipt_privileged_causal_values_absent": true,
+    "passed": true
+  },
+  "timestamp": "2026-07-12T03:26:05.812Z"
+}
