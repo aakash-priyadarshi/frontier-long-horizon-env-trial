@@ -1,8 +1,8 @@
 {
   "milestone": "final-integrated-environment",
   "schema_version": 3,
-  "tested_source_commit": "94e2c63991eeed26d41ed8c9769516fb95dd54b9",
-  "timestamp": "2026-07-12T13:00:30.131407+00:00",
+  "tested_source_commit": "065dfdb2ff63243b960ab4011735776a89888680",
+  "timestamp": "2026-07-12T13:03:29.596109+00:00",
   "verification": {
     "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
     "gym_reward": 1.0,
