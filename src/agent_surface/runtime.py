@@ -10,6 +10,7 @@ from event_service_substrate.canonical import canonical_json, digest
 from event_service_substrate.store import StateStore
 
 from .errors import ToolError
+from .trace import TraceCapabilityAuthority
 
 STAGE_S1: Final[str] = "s1"
 STAGE_S2: Final[str] = "s2"
@@ -22,6 +23,8 @@ STAGE_CUTPOINT: Final[str] = "cutpoint"
 STAGE_TRANSIENT: Final[str] = "transient"
 
 EFFECT_AMOUNT: Final[int] = 100
+
+VIEWS: Final[frozenset[str]] = frozenset({"journal", "effects", "keys", "trace"})
 
 
 class Cutpoint(Exception):
@@ -61,6 +64,19 @@ class RuntimeStore:
         self._s2_cutpoint_pending = (cutpoint == "s2.exit") and (profile == 1)
         self._s5_cutpoint_pending = (cutpoint == "s5.exit") and (profile == 0)
         self._transient_pending = workload_id in ("P1", "P2") and cutpoint is None
+        self._selectors: list[dict[str, Any]] = []
+
+    @property
+    def trace_selectors(self) -> list[dict[str, Any]]:
+        """Distinct selectors observed during this trace."""
+        seen: set[tuple[str, str | None, str | None]] = set()
+        distinct: list[dict[str, Any]] = []
+        for sel in self._selectors:
+            key = (sel.get("event_id"), sel.get("command_key"), sel.get("occurrence_id"))
+            if key not in seen:
+                seen.add(key)
+                distinct.append(sel)
+        return distinct
 
     def _next_seq(self, table: str) -> int:
         row = self.store.connection.execute(
@@ -85,6 +101,14 @@ class RuntimeStore:
                 [self.handle, stage, event_id, command_key, occurrence_id, tick]
             ),
         )
+        if event_id is not None:
+            self._selectors.append(
+                {
+                    "event_id": event_id,
+                    "command_key": command_key,
+                    "occurrence_id": occurrence_id,
+                }
+            )
         return self.store.append_trace_span(
             correlation_handle=self.handle,
             span_id=span_id,
@@ -258,12 +282,16 @@ class RuntimeEngine:
         store: StateStore,
         active_workspace: Path,
         profile: int,
-        handle_salt: str,
+        trace_authority: TraceCapabilityAuthority,
+        session_id: str,
+        trace_epoch: int,
     ) -> None:
         self.store = store
         self.active_workspace = active_workspace
         self.profile = profile
-        self._handle_salt = handle_salt
+        self._trace_authority = trace_authority
+        self._session_id = session_id
+        self._trace_epoch = trace_epoch
         self._active_config_root = self._config_root(self._active_settings_bytes())
 
     def _active_settings_bytes(self) -> bytes:
@@ -287,19 +315,14 @@ class RuntimeEngine:
     def _new_handle(
         self, workload_id: str, cutpoint: str | None, alias: str, run_id: int
     ) -> str:
-        return "h_" + digest(
-            "handle-v1",
-            canonical_json(
-                {
-                    "workload_id": workload_id,
-                    "cutpoint": cutpoint,
-                    "alias": alias,
-                    "tick": self.store.tick(),
-                    "run_id": run_id,
-                    "handle_salt": self._handle_salt,
-                }
-            ),
-        )[:32]
+        return self._trace_authority.derive_placeholder(
+            session_id=self._session_id,
+            epoch=self._trace_epoch,
+            run_id=run_id,
+            workload_id=workload_id,
+            alias=alias,
+            tick=self.store.tick(),
+        )
 
     def _accept_command(
         self,
@@ -506,6 +529,25 @@ class RuntimeEngine:
             "active_config_root": self._active_config_root,
         }
 
+    def _issue_capability(self, runtime: RuntimeStore, run_id: int) -> str:
+        """Replace the runtime placeholder handle with an authenticated capability."""
+        token = self._trace_authority.issue(
+            session_id=self._session_id,
+            epoch=self._trace_epoch,
+            run_id=run_id,
+            workload_id=runtime.workload_id,
+            alias=runtime.alias,
+            tick=runtime.start_tick,
+            selectors=runtime.trace_selectors,
+            views=sorted(VIEWS),
+        )
+        self.store.connection.execute(
+            "UPDATE trace_spans SET correlation_handle = ? WHERE correlation_handle = ?",
+            (token, runtime.handle),
+        )
+        self.store.connection.commit()
+        return token
+
     def run(
         self, workload_id: str, cutpoint: str | None = None, run_id: int = 0
     ) -> dict[str, Any]:
@@ -532,5 +574,8 @@ class RuntimeEngine:
             f"workload {workload_id} cutpoint {cutpoint} handle {handle} alias {alias}"
         )
         if workload_id in ("P1", "P2", "P3"):
-            return self._run_public_workload(runtime, attempt_budget)
-        return self._run_cutpoint_diagnostic(runtime, attempt_budget)
+            receipt = self._run_public_workload(runtime, attempt_budget)
+        else:
+            receipt = self._run_cutpoint_diagnostic(runtime, attempt_budget)
+        receipt["handle"] = self._issue_capability(runtime, run_id)
+        return receipt

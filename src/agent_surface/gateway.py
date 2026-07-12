@@ -53,7 +53,8 @@ class ToolClient:
         if response.get("id") != request_id:
             raise ToolError("gateway response id mismatch")
         if "error" in response:
-            raise ToolError(response["error"]["message"])
+            error = response["error"]
+            raise ToolError(error.get("message", "tool error"), code=error.get("code", "tool_error"))
         return response["result"]
 
     def release_status(self) -> dict[str, Any]:
@@ -200,33 +201,33 @@ class ToolGateway:
 class _Controller:
     """Privileged controller that dispatches JSON tool calls to an AgentSession."""
 
-    _TOOL_MAP: dict[str, str] = {
-        "release.status": "release_status",
-        "workspace.read": "workspace_read",
-        "workspace.edit": "workspace_edit",
-        "telemetry.logs": "telemetry_logs",
-        "telemetry.trace": "telemetry_trace",
-        "state.inspect": "state_inspect",
-        "runtime.run": "runtime_run",
-        "recovery.pause": "recovery_pause",
-        "recovery.restore": "recovery_restore",
-        "release.rollback": "release_rollback",
-        "release.deploy": "release_deploy",
-        "recovery.resume": "recovery_resume",
-    }
-
     def __init__(self, session: Any) -> None:
         self._session = session
+        self._tools: dict[str, Any] = {
+            "release.status": session.release_status,
+            "workspace.read": session.workspace_read,
+            "workspace.edit": session.workspace_edit,
+            "telemetry.logs": session.telemetry_logs,
+            "telemetry.trace": session.telemetry_trace,
+            "state.inspect": session.state_inspect,
+            "runtime.run": session.runtime_run,
+            "recovery.pause": session.recovery_pause,
+            "recovery.restore": session.recovery_restore,
+            "release.rollback": session.release_rollback,
+            "release.deploy": session.release_deploy,
+            "recovery.resume": session.recovery_resume,
+            "system.leak_probe": session.leak_probe,
+        }
+
+    def _error(self, code: str, message: str) -> dict[str, Any]:
+        return {"error": {"code": code, "message": message}}
 
     def _dispatch(self, tool: str, arguments: dict[str, Any]) -> Any:
         if tool == "system.close":
             return {}
-        if tool == "system.leak_probe":
-            return self._session.leak_probe()
-        method_name = self._TOOL_MAP.get(tool)
-        if method_name is None:
-            raise ToolError(f"unknown tool {tool}")
-        method = getattr(self._session, method_name)
+        method = self._tools.get(tool)
+        if method is None:
+            raise ToolError(f"unknown tool {tool}", code="unknown_tool")
         return method(**arguments)
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -235,18 +236,18 @@ class _Controller:
             tool = request["tool"]
             arguments = request.get("arguments", {})
             if not isinstance(arguments, dict):
-                raise ToolError("arguments must be an object")
+                raise ToolError("arguments must be an object", code="invalid_arguments")
             result = self._dispatch(tool, arguments)
             return {"id": request_id, "result": result}
         except ToolError as exc:
-            return {"id": request_id, "error": {"message": str(exc)}}
+            return {"id": request_id, "error": {"code": exc.code, "message": str(exc)}}
         except RuntimeError as exc:
-            return {"id": request_id, "error": {"message": str(exc)}}
+            return {"id": request_id, "error": {"code": "tool_execution_failed", "message": str(exc)}}
         except (ValueError, TypeError, KeyError) as exc:
-            return {"id": request_id, "error": {"message": "tool execution failed"}}
+            return {"id": request_id, "error": {"code": "tool_execution_failed", "message": "tool execution failed"}}
         except Exception as exc:
             print(f"gateway controller internal error: {exc}", file=sys.stderr)
-            return {"id": request_id, "error": {"message": "tool execution failed"}}
+            return {"id": request_id, "error": {"code": "tool_execution_failed", "message": "tool execution failed"}}
 
     def serve(self, infile: Any, outfile: Any) -> None:
         while True:
@@ -256,7 +257,7 @@ class _Controller:
             try:
                 request = json.loads(line)
             except json.JSONDecodeError:
-                outfile.write(json.dumps({"id": "unknown", "error": {"message": "invalid JSON"}}) + "\n")
+                outfile.write(json.dumps({"id": "unknown", "error": {"code": "invalid_json", "message": "invalid JSON"}}) + "\n")
                 outfile.flush()
                 continue
             response = self.handle(request)
@@ -278,10 +279,16 @@ def main() -> int:
 
     from event_service_substrate import RecoveryAuthority, build_fixture
     from agent_surface.session import AgentSession
+    from agent_surface.trace import TraceCapabilityAuthority
 
     authority = RecoveryAuthority(bytes.fromhex(config["key_hex"]), config["scope"])
+    trace_authority = TraceCapabilityAuthority.derive_from_recovery_authority(
+        authority.key, authority.scope, config["profile"]
+    )
     fixture = build_fixture(Path(config["fixture_dir"]), config["profile"], authority)
-    session = AgentSession(fixture, config["profile"], Path(config["session_dir"]))
+    session = AgentSession(
+        fixture, config["profile"], Path(config["session_dir"]), trace_authority
+    )
     try:
         controller = _Controller(session)
         sys.stdout.write(

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -19,9 +17,12 @@ SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
+sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
+
 from event_service_substrate import RecoveryAuthority, build_fixture  # noqa: E402
 from event_service_substrate.canonical import canonical_json  # noqa: E402
 from event_service_substrate.instance import TICKET  # noqa: E402
+from verify_common import parse_test_count, validate_source_commit  # noqa: E402
 
 
 _KEYS = (
@@ -42,6 +43,8 @@ _PUBLIC_ROOT_NAMES = (
     "audit",
     "snapshot",
 )
+
+_ALLOWED_RECEIPT_FILES = ("evidence/milestone-1-substrate.json",)
 
 
 def _authority(index: int) -> RecoveryAuthority:
@@ -346,17 +349,6 @@ def write_receipt(receipt: dict[str, Any], output: Path) -> None:
     )
 
 
-def _git_head() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
 def _run_pytest() -> tuple[str, int]:
     command = [sys.executable, "-m", "pytest", "tests/milestone_1", "-q"]
     result = subprocess.run(
@@ -369,10 +361,7 @@ def _run_pytest() -> tuple[str, int]:
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
         raise RuntimeError("Milestone 1 pytest suite failed")
-    match = re.search(r"(\d+) passed", result.stdout)
-    if match is None:
-        raise RuntimeError("could not determine passing test count")
-    return subprocess.list2cmdline(command), int(match.group(1))
+    return subprocess.list2cmdline(command), parse_test_count(result.stdout)
 
 
 def main() -> int:
@@ -389,9 +378,11 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        source_commit = validate_source_commit(
+            REPOSITORY_ROOT, args.source_commit, _ALLOWED_RECEIPT_FILES
+        )
         pytest_command, test_count = _run_pytest()
         verification_command = subprocess.list2cmdline([sys.executable, *sys.argv])
-        source_commit = args.source_commit or _git_head()
         receipt = collect_live_evidence(
             source_commit=source_commit,
             verification_command=verification_command,

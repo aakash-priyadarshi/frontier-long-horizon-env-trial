@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 import shutil
 import subprocess
 import sys
@@ -19,6 +18,7 @@ from event_service_substrate.store import StateStore
 
 from .errors import ToolError
 from .runtime import RuntimeEngine
+from .trace import TraceCapabilityAuthority
 
 WORKSPACE_SUBDIR: Final[str] = "service"
 MAX_LOG_LINES: Final[int] = 100
@@ -41,10 +41,12 @@ class AgentSession:
         fixture: ServiceFixture,
         profile: int,
         session_dir: Path,
+        trace_authority: TraceCapabilityAuthority,
     ) -> None:
         self._fixture = fixture
         self._profile = profile
         self._store = fixture.store
+        self._trace_authority = trace_authority
         self.session_dir = session_dir
         self.active_workspace = session_dir / "active"
         self.candidate_workspace = session_dir / "candidate"
@@ -52,7 +54,7 @@ class AgentSession:
         self.metadata_path = session_dir / "metadata.json"
         self._workload_history: list[dict[str, Any]] = []
         self._public_workload_pass: dict[str, set[str]] = {}
-        self._handle_salt = secrets.token_hex(32)
+        self._trace_epoch = 1
         self._closed = False
 
         session_dir.mkdir(parents=True, exist_ok=False)
@@ -75,6 +77,7 @@ class AgentSession:
 
     def close(self) -> None:
         if not self._closed:
+            self._bump_trace_epoch()
             self._fixture.close()
             self._closed = True
 
@@ -106,6 +109,9 @@ class AgentSession:
             ),
             encoding="utf-8",
         )
+
+    def _bump_trace_epoch(self) -> None:
+        self._trace_epoch += 1
 
     def _active_revision_label(self) -> str:
         row = self._store.rows(
@@ -169,7 +175,16 @@ class AgentSession:
         return target
 
     def _seed_initial_trace(self) -> None:
-        handle = self._initial_handle()
+        handle = self._trace_authority.issue(
+            session_id=self.session_id,
+            epoch=self._trace_epoch,
+            run_id=0,
+            workload_id="initial",
+            alias="Q-41",
+            tick=self._store.tick(),
+            selectors=[],
+            views=["trace"],
+        )
         # A single neutral span for the pre-session incident log stream.
         self._store.append_trace_span(
             correlation_handle=handle,
@@ -183,19 +198,6 @@ class AgentSession:
             occurrence_id=None,
             tick=self._store.tick(),
         )
-
-    def _initial_handle(self) -> str:
-        return "h_" + digest(
-            "handle-v1",
-            canonical_json(
-                {
-                    "alias": "Q-41",
-                    "window": [41, 45],
-                    "source": "initial",
-                    "handle_salt": self._handle_salt,
-                }
-            ),
-        )[:32]
 
     # ------------------------------------------------------------------
     # Tool implementations
@@ -293,28 +295,42 @@ class AgentSession:
                 (start, end, f"%alias={alias}%", MAX_LOG_LINES),
             )
         ]
-        handle = self._store.connection.execute(
+        handles = self._store.connection.execute(
             """
             SELECT correlation_handle, MIN(tick) as t
             FROM trace_spans
             WHERE alias = ? AND tick >= ? AND tick <= ?
             GROUP BY correlation_handle
             ORDER BY t
-            LIMIT 1
             """,
             (alias, start, end),
-        ).fetchone()
-        if handle is None:
-            raise ToolError("no trace handle for the requested alias and window")
-        return {
-            "alias": alias,
-            "window": [start, end],
-            "handle": handle[0],
-            "lines": lines,
-        }
+        ).fetchall()
+        for handle, _ in handles:
+            try:
+                self._trace_authority.validate(
+                    handle,
+                    session_id=self.session_id,
+                    epoch=self._trace_epoch,
+                    view="trace",
+                )
+                return {
+                    "alias": alias,
+                    "window": [start, end],
+                    "handle": handle,
+                    "lines": lines,
+                }
+            except ToolError:
+                continue
+        raise ToolError("no valid trace handle for the requested alias and window")
 
     def telemetry_trace(self, handle: str) -> dict[str, Any]:
         """telemetry.trace: return bounded neutral spans for a handle."""
+        self._trace_authority.validate(
+            handle,
+            session_id=self.session_id,
+            epoch=self._trace_epoch,
+            view="trace",
+        )
         if not self._store.trace_handle_exists(handle):
             raise ToolError("invalid trace handle")
         rows = self._store.trace_spans_for_handle(handle)[:MAX_TRACE_SPANS]
@@ -344,23 +360,14 @@ class AgentSession:
             raise ToolError("unknown view")
         if source == "public":
             return self._state_inspect_public(selector, view)
-        if not self._store.trace_handle_exists(source):
-            raise ToolError("invalid trace source")
-        if not self._selector_in_trace(source, selector):
-            raise ToolError("selector not found in trace")
+        self._trace_authority.validate(
+            source,
+            session_id=self.session_id,
+            epoch=self._trace_epoch,
+            view=view,
+            selector=selector,
+        )
         return self._state_inspect_view(selector, view)
-
-    def _selector_in_trace(self, handle: str, selector: dict[str, Any]) -> bool:
-        if not any(value is not None for value in selector.values()):
-            raise ToolError("selector is empty")
-        for row in self._store.trace_selectors_for_handle(handle):
-            if all(
-                row.get(key) == value
-                for key, value in selector.items()
-                if value is not None
-            ):
-                return True
-        return False
 
     def _state_inspect_public(self, selector: dict[str, Any], view: str) -> dict[str, Any]:
         if view == "progress":
@@ -463,7 +470,12 @@ class AgentSession:
         run_id = len(self._workload_history)
         active_config_root = self._active_config_root()
         engine = RuntimeEngine(
-            self._store, self.active_workspace, self._profile, self._handle_salt
+            self._store,
+            self.active_workspace,
+            self._profile,
+            self._trace_authority,
+            self.session_id,
+            self._trace_epoch,
         )
         try:
             receipt = engine.run(workload_id, cutpoint, run_id=run_id)
@@ -492,6 +504,7 @@ class AgentSession:
         except (RuntimeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
         self._public_workload_pass.pop(self._active_config_root(), None)
+        self._bump_trace_epoch()
         return result
 
     def release_rollback(self, revision: str) -> dict[str, Any]:
@@ -523,6 +536,7 @@ class AgentSession:
             )
             self._store.connection.commit()
             self._write_metadata()
+            self._bump_trace_epoch()
             return {
                 "revision": revision,
                 "active_source_root": self._active_source_root(),
@@ -576,6 +590,7 @@ class AgentSession:
             )
             self._store.connection.commit()
             self._write_metadata()
+            self._bump_trace_epoch()
             return {
                 "revision": "candidate",
                 "active_source_root": self._active_source_root(),
@@ -604,6 +619,7 @@ class AgentSession:
         self._store.append_telemetry(tick, "control", "intake resumed")
         self._store.connection.commit()
         self._write_metadata()
+        self._bump_trace_epoch()
         return tick
 
     def tool_inventory(self) -> list[str]:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -18,9 +17,12 @@ SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
+sys.path.insert(0, str(REPOSITORY_ROOT / "scripts"))
+
 from agent_surface import ToolGateway, ToolClient  # noqa: E402
 from event_service_substrate import RecoveryAuthority  # noqa: E402
 from event_service_substrate.canonical import canonical_json  # noqa: E402
+from verify_common import parse_test_count, validate_source_commit  # noqa: E402
 
 
 _KEYS = (
@@ -30,6 +32,11 @@ _KEYS = (
 _SCOPES = (
     "scope-71e5a88c9bdc47f0",
     "scope-c92f60ad3e7641bb",
+)
+
+_ALLOWED_RECEIPT_FILES = (
+    "evidence/milestone-1-substrate.json",
+    "evidence/milestone-2-interaction-layer.json",
 )
 
 
@@ -147,8 +154,7 @@ def collect_live_evidence(
     *,
     source_commit: str,
     verification_command: str,
-    pytest_command: str,
-    test_count: int,
+    pytest_summary: dict[str, Any],
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="milestone-2-live-") as directory:
         base = Path(directory)
@@ -211,8 +217,12 @@ def collect_live_evidence(
                 "verification": {
                     "command": verification_command,
                     "python_version": sys.version.split()[0],
-                    "pytest_command": pytest_command,
-                    "test_count": test_count,
+                    "milestone_1_pytest_command": pytest_summary["milestone_1_pytest_command"],
+                    "milestone_1_test_count": pytest_summary["milestone_1_test_count"],
+                    "milestone_2_pytest_command": pytest_summary["milestone_2_pytest_command"],
+                    "milestone_2_test_count": pytest_summary["milestone_2_test_count"],
+                    "total_test_count": pytest_summary["total_test_count"],
+                    "test_count": pytest_summary["total_test_count"],
                     "outcome": "pass",
                 },
                 "semantic_roots": {
@@ -257,19 +267,8 @@ def write_receipt(receipt: dict[str, Any], output: Path) -> None:
     )
 
 
-def _git_head() -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
-
-
-def _run_pytest() -> tuple[str, int]:
-    command = [sys.executable, "-m", "pytest", "tests", "-q"]
+def _run_pytest_suite(path: str) -> tuple[str, int]:
+    command = [sys.executable, "-m", "pytest", path, "-q"]
     result = subprocess.run(
         command,
         cwd=REPOSITORY_ROOT,
@@ -279,11 +278,20 @@ def _run_pytest() -> tuple[str, int]:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
-        raise RuntimeError("pytest suite failed")
-    match = re.search(r"(\d+) passed", result.stdout)
-    if match is None:
-        raise RuntimeError("could not determine passing test count")
-    return subprocess.list2cmdline(command), int(match.group(1))
+        raise RuntimeError(f"pytest suite {path} failed")
+    return subprocess.list2cmdline(command), parse_test_count(result.stdout)
+
+
+def _run_pytests() -> dict[str, Any]:
+    m1_command, m1_count = _run_pytest_suite("tests/milestone_1")
+    m2_command, m2_count = _run_pytest_suite("tests/milestone_2")
+    return {
+        "milestone_1_pytest_command": m1_command,
+        "milestone_1_test_count": m1_count,
+        "milestone_2_pytest_command": m2_command,
+        "milestone_2_test_count": m2_count,
+        "total_test_count": m1_count + m2_count,
+    }
 
 
 def main() -> int:
@@ -300,14 +308,15 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        pytest_command, test_count = _run_pytest()
+        source_commit = validate_source_commit(
+            REPOSITORY_ROOT, args.source_commit, _ALLOWED_RECEIPT_FILES
+        )
+        pytest_summary = _run_pytests()
         verification_command = subprocess.list2cmdline([sys.executable, *sys.argv])
-        source_commit = args.source_commit or _git_head()
         receipt = collect_live_evidence(
             source_commit=source_commit,
             verification_command=verification_command,
-            pytest_command=pytest_command,
-            test_count=test_count,
+            pytest_summary=pytest_summary,
         )
         write_receipt(receipt, args.output)
         print(f"wrote {args.output}")
