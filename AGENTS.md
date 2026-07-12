@@ -8,8 +8,8 @@ software-engineering agents.
 
 Research and proposal review are complete. The narrow measurable capability and
 paired verifier-spike design are approved. Milestone 1, the deterministic paired
-incident substrate, is implemented. Implementation proceeds only through explicitly
-approved milestones.
+incident substrate, and its accepted audit fixes are implemented. Implementation
+proceeds only through explicitly approved milestones.
 
 ## Roles and authority
 
@@ -25,7 +25,7 @@ approved milestones.
 
 ## Current stage
 
-**Current stage: Milestone 1 implemented, awaiting independent adversarial audit.**
+**Current stage: Milestone 1 audit fixes implemented, awaiting targeted re-audit.**
 
 ### Allowed
 

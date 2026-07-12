@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import shutil
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from .authority import RecoveryAuthority
 from .canonical import canonical_json, digest, tree_root
 from .store import SCHEMA_TABLES, StateStore
 
@@ -35,6 +38,14 @@ CODE_FILES: Final[tuple[Path, ...]] = (
 )
 CONFIG_FILE: Final[Path] = Path("service/settings.toml")
 
+_EVENT_PRIMARY: Final[str] = "evt_74c31f146a5d4e198f83b2d7619a0c5e"
+_EVENT_ADDITIONAL: Final[str] = "evt_c92580b73e124da59b641f037a6e82d4"
+_EFFECT_PRIMARY: Final[str] = "efx_03f1ab9857434fcaaad46d5d1289ce70"
+_EFFECT_REPLAY: Final[str] = "efx_aa2874f0c5314c54b136df95e4a8207c"
+_EFFECT_ADDITIONAL: Final[str] = "efx_d5899ca5c24e48d39f6e873ab020154b"
+_COMMAND_KEY: Final[str] = "cmd_8ef23dbbb32b4cb3aaeb2fb0e2a14ce1"
+_OCCURRENCE: Final[str] = "occ_f42e1a985e8b45f3a6bc9757dd2c6409"
+
 
 def _settings(attempt_budget: int) -> bytes:
     return (
@@ -46,8 +57,8 @@ def _settings(attempt_budget: int) -> bytes:
     ).encode("utf-8")
 
 
-def _config_root(attempt_budget: int) -> str:
-    return digest("config-v1", _settings(attempt_budget))
+def _config_root(config_bytes: bytes) -> str:
+    return digest("config-v1", config_bytes)
 
 
 @dataclass
@@ -56,16 +67,46 @@ class ServiceFixture:
     workspace: Path
     store: StateStore
     source_root: str
-    config_root: str
 
     def close(self) -> None:
         self.store.close()
 
+    def _revision_artifact(self, revision: str) -> tuple[str, str]:
+        row = self.store.rows(
+            "SELECT config_root, config_bytes FROM deployments WHERE revision = ?",
+            (revision,),
+        )
+        if len(row) != 1:
+            raise KeyError(revision)
+        config_root, config_text = row[0]
+        actual_root = _config_root(config_text.encode("utf-8"))
+        if config_root != actual_root:
+            raise RuntimeError("deployment configuration root does not match its artifact")
+        return config_root, config_text
+
+    def _active_revision(self) -> tuple[str, str, str]:
+        active = self.store.rows(
+            """
+            SELECT revision, config_root, config_bytes
+            FROM deployments WHERE status = 'active'
+            """
+        )
+        if len(active) != 1:
+            raise RuntimeError("exactly one revision must be active")
+        revision, config_root, config_text = active[0]
+        actual_root = _config_root(config_text.encode("utf-8"))
+        if config_root != actual_root:
+            raise RuntimeError("active configuration root does not match its artifact")
+        return revision, config_root, config_text
+
     def roots(self) -> dict[str, str]:
+        _, active_config_root, _ = self._active_revision()
         return {
             "source": self.source_root,
-            "config": self.config_root,
-            "state": self.store.state_root(),
+            "config": active_config_root,
+            "service_state": self.store.state_root(),
+            "deployment": self.store.deployment_root(),
+            "runtime": self.store.runtime_root(),
             "telemetry": self.store.telemetry_root(),
             "audit": self.store.audit_root(),
             "snapshot": self.store.snapshot_root(),
@@ -78,30 +119,33 @@ class ServiceFixture:
         return tuple(row[0] for row in rows)
 
     def public_status(self) -> dict[str, Any]:
-        active = self.store.rows(
-            "SELECT revision, config_root FROM deployments WHERE status = 'active'"
-        )
-        if len(active) != 1:
-            raise RuntimeError("exactly one revision must be active")
+        active_revision, active_config_root, active_config_text = self._active_revision()
+        parsed = tomllib.loads(active_config_text)
+        attempt_budget = int(parsed["service"]["attempt_budget"])
         roots = self.roots()
         return {
             "ticket": TICKET,
             "alias": "Q-41",
             "fake_tick": self.store.tick(),
             "intake": self.store.runtime_value("intake_state"),
-            "active_revision": active[0][0],
-            "active_config_root": active[0][1],
-            "attempt_budget": 1,
+            "active_revision": active_revision,
+            "active_config_root": active_config_root,
+            "attempt_budget": attempt_budget,
             "public_canary": "green_once",
             "incident": "open",
-            "visible_effect_count": 2,
+            "visible_effect_count": self.store.count("effects"),
             "logs": list(self.visible_logs()),
             "shared_roots": {
-                "source": roots["source"],
-                "config": roots["config"],
-                "telemetry": roots["telemetry"],
-                "audit": roots["audit"],
-                "snapshot": roots["snapshot"],
+                name: roots[name]
+                for name in (
+                    "source",
+                    "config",
+                    "deployment",
+                    "runtime",
+                    "telemetry",
+                    "audit",
+                    "snapshot",
+                )
             },
         }
 
@@ -113,11 +157,21 @@ class ServiceFixture:
             {
                 "files": [(path, data.decode("utf-8")) for path, data in files],
                 "status": self.public_status(),
+                "revision_diff": self.revision_diff(),
             }
         )
 
     def revision_diff(self) -> str:
-        return "-attempt_budget = 3\n+attempt_budget = 1\n"
+        _, r0_text = self._revision_artifact("r0")
+        _, r1_text = self._revision_artifact("r1")
+        return "".join(
+            difflib.unified_diff(
+                r0_text.splitlines(keepends=True),
+                r1_text.splitlines(keepends=True),
+                fromfile="r0/settings.toml",
+                tofile="r1/settings.toml",
+            )
+        )
 
     def pause_intake(self) -> int:
         return self.store.pause_intake()
@@ -132,18 +186,45 @@ def _copy_workspace(destination: Path) -> None:
 
 
 def _register_revisions(store: StateStore, source_root: str) -> None:
+    r0_config = _settings(3)
+    r1_config = _settings(1)
+    candidate_config = b""
     store.connection.executemany(
         """
-        INSERT INTO deployments(revision, code_root, config_root, activated_tick, status)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO deployments(
+            revision, code_root, config_root, config_bytes, activated_tick, status
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
-            ("r0", source_root, _config_root(3), 39, "available"),
-            ("r1", source_root, _config_root(1), 40, "active"),
-            ("candidate", "", "", 0, "placeholder"),
+            (
+                "r0",
+                source_root,
+                _config_root(r0_config),
+                r0_config.decode("utf-8"),
+                39,
+                "available",
+            ),
+            (
+                "r1",
+                source_root,
+                _config_root(r1_config),
+                r1_config.decode("utf-8"),
+                40,
+                "active",
+            ),
+            (
+                "candidate",
+                "",
+                _config_root(candidate_config),
+                candidate_config.decode("utf-8"),
+                0,
+                "placeholder",
+            ),
         ),
     )
-    store.append_audit("deployment_activate", _config_root(1), "controller", 40)
+    store.append_audit(
+        "deployment_activate", _config_root(r1_config), "controller", 40
+    )
     store.connection.commit()
 
 
@@ -160,50 +241,59 @@ def _seed_history(store: StateStore, profile: int) -> None:
     if profile == 0:
         store.connection.execute(
             """
-            INSERT INTO journal(seq, event_id, command_key, occurrence_id, payload_hash, accepted_tick)
-            VALUES (1, 'evt-041-a', 'cmd-041', 'occ-041', ?, 41)
+            INSERT INTO journal(
+                seq, event_id, command_key, occurrence_id, payload_hash, accepted_tick
+            ) VALUES (1, ?, ?, ?, ?, 41)
             """,
-            (payload_hash,),
+            (_EVENT_PRIMARY, _COMMAND_KEY, _OCCURRENCE, payload_hash),
         )
         store.connection.execute(
             """
             INSERT INTO command_keys(command_key, occurrence_id, event_id, state)
-            VALUES ('cmd-041', 'occ-041', 'evt-041-a', 'registered')
-            """
+            VALUES (?, ?, ?, 'registered')
+            """,
+            (_COMMAND_KEY, _OCCURRENCE, _EVENT_PRIMARY),
         )
         store.connection.executemany(
             """
-            INSERT INTO effects(effect_id, occurrence_id, amount, kind, source_event_id, committed_tick)
-            VALUES (?, 'occ-041', 100, 'settlement', 'evt-041-a', ?)
+            INSERT INTO effects(
+                effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
+            ) VALUES (?, ?, 100, 'settlement', ?, ?)
             """,
-            (("eff-041-a1", 42), ("eff-041-a2", 44)),
+            (
+                (_EFFECT_PRIMARY, _OCCURRENCE, _EVENT_PRIMARY, 42),
+                (_EFFECT_REPLAY, _OCCURRENCE, _EVENT_PRIMARY, 44),
+            ),
         )
         committed_seq = 1
     elif profile == 1:
         store.connection.executemany(
             """
-            INSERT INTO journal(seq, event_id, command_key, occurrence_id, payload_hash, accepted_tick)
-            VALUES (?, ?, 'cmd-041', 'occ-041', ?, ?)
+            INSERT INTO journal(
+                seq, event_id, command_key, occurrence_id, payload_hash, accepted_tick
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                (1, "evt-041-a", payload_hash, 41),
-                (2, "evt-041-b", payload_hash, 43),
+                (1, _EVENT_PRIMARY, _COMMAND_KEY, _OCCURRENCE, payload_hash, 41),
+                (2, _EVENT_ADDITIONAL, _COMMAND_KEY, _OCCURRENCE, payload_hash, 43),
             ),
         )
         store.connection.execute(
             """
             INSERT INTO command_keys(command_key, occurrence_id, event_id, state)
-            VALUES ('cmd-041', 'occ-041', 'evt-041-b', 'registered')
-            """
+            VALUES (?, ?, ?, 'registered')
+            """,
+            (_COMMAND_KEY, _OCCURRENCE, _EVENT_ADDITIONAL),
         )
         store.connection.executemany(
             """
-            INSERT INTO effects(effect_id, occurrence_id, amount, kind, source_event_id, committed_tick)
-            VALUES (?, 'occ-041', 100, 'settlement', ?, ?)
+            INSERT INTO effects(
+                effect_id, occurrence_id, amount, kind, source_event_id, committed_tick
+            ) VALUES (?, ?, 100, 'settlement', ?, ?)
             """,
             (
-                ("eff-041-a1", "evt-041-a", 42),
-                ("eff-041-b1", "evt-041-b", 44),
+                (_EFFECT_PRIMARY, _OCCURRENCE, _EVENT_PRIMARY, 42),
+                (_EFFECT_ADDITIONAL, _OCCURRENCE, _EVENT_ADDITIONAL, 44),
             ),
         )
         committed_seq = 2
@@ -217,18 +307,24 @@ def _seed_history(store: StateStore, profile: int) -> None:
     store.connection.commit()
 
 
-def build_fixture(root: Path, profile: int) -> ServiceFixture:
+def build_fixture(
+    root: Path,
+    profile: int,
+    authority: RecoveryAuthority,
+) -> ServiceFixture:
     root.mkdir(parents=True, exist_ok=False)
     workspace = root / "workspace"
     _copy_workspace(workspace)
     source_root = tree_root(workspace, CODE_FILES)
-    config_root = digest("config-v1", (workspace / CONFIG_FILE).read_bytes())
-    store = StateStore(root / "service.sqlite3")
+    active_config = (workspace / CONFIG_FILE).read_bytes()
+    if active_config != _settings(1):
+        raise RuntimeError("public active configuration does not match r1 artifact")
+    store = StateStore(root / "service.sqlite3", authority)
     store.initialize()
     _register_revisions(store, source_root)
     store.create_snapshot("S0")
     _seed_history(store, profile)
-    return ServiceFixture(root, workspace, store, source_root, config_root)
+    return ServiceFixture(root, workspace, store, source_root)
 
 
 __all__ = [

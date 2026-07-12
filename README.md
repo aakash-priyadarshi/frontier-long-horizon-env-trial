@@ -7,15 +7,21 @@ public artifacts and distinct privileged histories.
 
 ## Current status
 
-Milestone 1 is complete. The repository currently provides:
+**Milestone 1 audit fixes implemented, awaiting targeted re-audit.**
+
+The repository currently provides:
 
 - a single-process Python 3.12 service substrate backed by SQLite;
 - an integer-only fake clock with deterministic transition costs;
-- canonical source, configuration, state, telemetry, audit, and snapshot roots;
+- separate canonical roots for source, active configuration, service data,
+  deployment state, runtime state, telemetry, audit history, and snapshot semantics;
 - byte-identical neutral public workspaces for both fixtures;
 - shared `r0` and `r1` revision history plus a candidate placeholder;
-- signed `S0` restoration that preserves telemetry and audit history;
-- focused tests for reproducibility, recovery provenance, and public-surface leaks.
+- locally HMAC-authenticated `S0` restoration with authenticated recovery provenance;
+- focused negative tests for forgery, reproducibility, recovery provenance, and
+  complete public-surface enumeration;
+- a one-command verifier that reruns tests and regenerates the evidence receipt from
+  fresh fixtures.
 
 The agent tool API, hidden verifier, workload suite, solution controls, container
 runtime, and model evaluations are intentionally deferred to later approved
@@ -24,9 +30,11 @@ milestones.
 ## Repository layout
 
 ```text
-research/                     Research and approved verifier-spike design
+research/                     Research, approved design, and independent audit
 src/event_service_substrate/  Deterministic service and persistence substrate
 tests/milestone_1/            Focused Milestone 1 verification
+scripts/                      Reproducible verification entrypoints
+docs/                         Implemented Milestone 1 boundary documentation
 evidence/                     Machine-readable verification receipts
 ```
 
@@ -41,12 +49,36 @@ python -m venv .venv
 
 ## Verify
 
+Run the focused suite directly:
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\milestone_1 -q
 ```
 
-The corresponding machine-readable result is stored in
-`evidence/milestone-1-substrate.json`.
+Regenerate the machine-readable receipt from a fresh live run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_milestone_1.py
+```
+
+The entrypoint stops if pytest or any live root, equality, authentication, recovery,
+or leak check fails. On success it writes `evidence/milestone-1-substrate.json`.
+
+## Security boundary
+
+Snapshot and recovery authenticity use HMAC-SHA256 with a capability supplied by
+privileged fixture-building code. The key is not stored in SQLite, public workspace
+files, status output, logs, canonical roots, or evidence receipts. Authentication
+binds the snapshot identity, state payload and root, creation tick, fixture scope,
+and recovery transition provenance.
+
+This is local privileged authentication, not production OS, process, container, or
+deployment isolation. The future agent-mount boundary is **NOT VERIFIED**. Privileged
+builder package source, fixture databases, audit receipts, tests, and authority key
+material must not be mounted into a future agent runtime.
+
+The implemented root boundaries are documented in
+`docs/milestone-1-substrate-boundary.md`.
 
 ## Project constraints
 
@@ -54,3 +86,4 @@ The corresponding machine-readable result is stored in
 - Claims must be supported by reproducible evidence.
 - The public workspace must not disclose its privileged fixture selection.
 - Implementation work advances only through reviewed milestones.
+- Milestone 2 has not begun and remains gated on targeted re-audit.

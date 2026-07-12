@@ -1,4 +1,4 @@
-"""SQLite persistence, snapshots, audit chaining, and canonical roots."""
+"""SQLite persistence, authenticated recovery, audit chaining, and roots."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Final, Iterable
 
+from .authority import RecoveryAuthority
 from .canonical import canonical_json, digest, table_document, table_root
 from .clock import FakeClock
 
@@ -23,6 +24,7 @@ SERVICE_TABLES: Final[tuple[str, ...]] = (
 SCHEMA_TABLES: Final[tuple[str, ...]] = (
     *SERVICE_TABLES,
     "recovery_snapshots",
+    "recovery_proofs",
     "deployments",
     "audit_chain",
     "runtime_state",
@@ -30,8 +32,9 @@ SCHEMA_TABLES: Final[tuple[str, ...]] = (
 )
 
 AUDIT_TABLES: Final[tuple[str, ...]] = ("audit_chain",)
+DEPLOYMENT_TABLES: Final[tuple[str, ...]] = ("deployments",)
+RUNTIME_TABLES: Final[tuple[str, ...]] = ("runtime_state",)
 TELEMETRY_TABLES: Final[tuple[str, ...]] = ("telemetry",)
-SNAPSHOT_TABLES: Final[tuple[str, ...]] = ("recovery_snapshots",)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -81,19 +84,34 @@ CREATE TABLE command_keys (
 
 CREATE TABLE recovery_snapshots (
     snapshot_id TEXT PRIMARY KEY,
-    signed_root TEXT NOT NULL,
+    state_root TEXT NOT NULL,
     cursor_seq INTEGER NOT NULL,
     journal_root TEXT NOT NULL,
     effect_root TEXT NOT NULL,
     payload TEXT NOT NULL,
-    signature TEXT NOT NULL,
+    auth_tag TEXT NOT NULL,
     created_tick INTEGER NOT NULL
+);
+
+CREATE TABLE recovery_proofs (
+    proof_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL,
+    pre_state_root TEXT NOT NULL,
+    post_state_root TEXT NOT NULL,
+    prior_audit_root TEXT NOT NULL,
+    action_kind TEXT NOT NULL,
+    action_tick INTEGER NOT NULL,
+    actor_scope TEXT NOT NULL,
+    audit_seq INTEGER NOT NULL,
+    audit_entry_hash TEXT NOT NULL,
+    auth_tag TEXT NOT NULL
 );
 
 CREATE TABLE deployments (
     revision TEXT PRIMARY KEY,
     code_root TEXT NOT NULL,
     config_root TEXT NOT NULL,
+    config_bytes TEXT NOT NULL,
     activated_tick INTEGER NOT NULL,
     status TEXT NOT NULL
 );
@@ -114,7 +132,7 @@ CREATE TABLE runtime_state (
 );
 
 CREATE TABLE telemetry (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq INTEGER PRIMARY KEY,
     tick INTEGER NOT NULL,
     channel TEXT NOT NULL,
     message TEXT NOT NULL
@@ -123,8 +141,9 @@ CREATE TABLE telemetry (
 
 
 class StateStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, authority: RecoveryAuthority) -> None:
         self.path = path
+        self._authority = authority
         self.connection = sqlite3.connect(path)
         self.connection.execute("PRAGMA foreign_keys = ON")
 
@@ -176,17 +195,31 @@ class StateStore:
             "UPDATE runtime_state SET value = ? WHERE key = ?", (value, key)
         )
 
-    def append_telemetry(self, tick: int, channel: str, message: str) -> None:
-        self.connection.execute(
-            "INSERT INTO telemetry(tick, channel, message) VALUES (?, ?, ?)",
-            (tick, channel, message),
+    def append_telemetry(self, tick: int, channel: str, message: str) -> int:
+        next_seq = int(
+            self.connection.execute(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM telemetry"
+            ).fetchone()[0]
         )
+        self.connection.execute(
+            "INSERT INTO telemetry(seq, tick, channel, message) VALUES (?, ?, ?, ?)",
+            (next_seq, tick, channel, message),
+        )
+        return next_seq
 
     def service_document(self) -> list[dict[str, Any]]:
         return table_document(self.connection, SERVICE_TABLES)
 
     def state_root(self) -> str:
+        """Return the canonical service-data root, excluding operational state."""
+
         return table_root(self.connection, SERVICE_TABLES, "service-state-v1")
+
+    def deployment_root(self) -> str:
+        return table_root(self.connection, DEPLOYMENT_TABLES, "deployment-state-v1")
+
+    def runtime_root(self) -> str:
+        return table_root(self.connection, RUNTIME_TABLES, "runtime-state-v1")
 
     def telemetry_root(self) -> str:
         return table_root(self.connection, TELEMETRY_TABLES, "telemetry-v1")
@@ -194,8 +227,49 @@ class StateStore:
     def audit_root(self) -> str:
         return table_root(self.connection, AUDIT_TABLES, "audit-v1")
 
+    def _audit_root_through(self, maximum_seq: int) -> str:
+        columns = [
+            row[1]
+            for row in self.connection.execute(
+                'PRAGMA table_info("audit_chain")'
+            ).fetchall()
+        ]
+        order = ", ".join(f'"{column}"' for column in columns)
+        rows = self.connection.execute(
+            f'SELECT {order} FROM audit_chain WHERE seq <= ? ORDER BY {order}',
+            (maximum_seq,),
+        ).fetchall()
+        document = [
+            {
+                "table": "audit_chain",
+                "columns": columns,
+                "rows": [list(row) for row in rows],
+            }
+        ]
+        return digest("audit-v1", canonical_json(document))
+
     def snapshot_root(self) -> str:
-        return table_root(self.connection, SNAPSHOT_TABLES, "snapshots-v1")
+        columns = (
+            "snapshot_id",
+            "state_root",
+            "cursor_seq",
+            "journal_root",
+            "effect_root",
+            "payload",
+            "created_tick",
+        )
+        order = ", ".join(columns)
+        rows = self.connection.execute(
+            f"SELECT {order} FROM recovery_snapshots ORDER BY {order}"
+        ).fetchall()
+        document = [
+            {
+                "table": "authenticated_snapshot_semantics",
+                "columns": list(columns),
+                "rows": [list(row) for row in rows],
+            }
+        ]
+        return digest("snapshot-semantics-v1", canonical_json(document))
 
     def append_audit(
         self,
@@ -264,9 +338,15 @@ class StateStore:
         return True
 
     def create_snapshot(self, snapshot_id: str) -> str:
-        payload_bytes = canonical_json(self.service_document())
-        signed_root = digest("service-state-v1", payload_bytes)
-        signature = digest("local-snapshot-signature-v1", payload_bytes)
+        payload = canonical_json(self.service_document()).decode("utf-8")
+        state_root = digest("service-state-v1", payload.encode("utf-8"))
+        created_tick = self.tick()
+        auth_tag = self._authority.snapshot_tag(
+            snapshot_id=snapshot_id,
+            state_root=state_root,
+            payload=payload,
+            created_tick=created_tick,
+        )
         cursor_seq = self.connection.execute(
             "SELECT committed_seq FROM cursor WHERE stream = 'settlement'"
         ).fetchone()[0]
@@ -275,37 +355,45 @@ class StateStore:
         self.connection.execute(
             """
             INSERT INTO recovery_snapshots(
-                snapshot_id, signed_root, cursor_seq, journal_root, effect_root,
-                payload, signature, created_tick
+                snapshot_id, state_root, cursor_seq, journal_root, effect_root,
+                payload, auth_tag, created_tick
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snapshot_id,
-                signed_root,
+                state_root,
                 cursor_seq,
                 journal_root,
                 effect_root,
-                payload_bytes.decode("utf-8"),
-                signature,
-                self.tick(),
+                payload,
+                auth_tag,
+                created_tick,
             ),
         )
-        self.append_audit("snapshot_create", signed_root, "controller", self.tick())
+        self.append_audit("snapshot_create", state_root, "controller", created_tick)
         self.connection.commit()
-        return signed_root
+        return state_root
 
     def snapshot_is_valid(self, snapshot_id: str) -> bool:
         row = self.connection.execute(
-            "SELECT signed_root, payload, signature FROM recovery_snapshots WHERE snapshot_id = ?",
+            """
+            SELECT state_root, payload, auth_tag, created_tick
+            FROM recovery_snapshots WHERE snapshot_id = ?
+            """,
             (snapshot_id,),
         ).fetchone()
         if row is None:
             return False
-        signed_root, payload, signature = row
+        state_root, payload, auth_tag, created_tick = row
         payload_bytes = payload.encode("utf-8")
-        return (
-            signed_root == digest("service-state-v1", payload_bytes)
-            and signature == digest("local-snapshot-signature-v1", payload_bytes)
+        if state_root != digest("service-state-v1", payload_bytes):
+            return False
+        return self._authority.snapshot_tag_is_valid(
+            snapshot_id=snapshot_id,
+            state_root=state_root,
+            payload=payload,
+            created_tick=created_tick,
+            auth_tag=auth_tag,
         )
 
     def pause_intake(self) -> int:
@@ -321,13 +409,22 @@ class StateStore:
     def restore_snapshot(self, snapshot_id: str) -> str:
         if self.runtime_value("intake_state") != "paused":
             raise RuntimeError("snapshot restoration requires paused intake")
+        if not self.audit_chain_valid():
+            raise RuntimeError("snapshot restoration requires a valid audit chain")
         row = self.connection.execute(
-            "SELECT payload FROM recovery_snapshots WHERE snapshot_id = ?",
+            """
+            SELECT state_root, payload FROM recovery_snapshots WHERE snapshot_id = ?
+            """,
             (snapshot_id,),
         ).fetchone()
         if row is None or not self.snapshot_is_valid(snapshot_id):
-            raise ValueError("snapshot is missing or invalid")
-        document = json.loads(row[0])
+            raise ValueError("authenticated snapshot is missing or invalid")
+        snapshot_state_root, payload = row
+        document = json.loads(payload)
+        pre_state_root = self.state_root()
+        prior_audit_root = self.audit_root()
+        actor_scope = self._authority.actor_scope
+        action_kind = "snapshot_restore"
         with self.connection:
             for table_name in reversed(SERVICE_TABLES):
                 self.connection.execute(f'DELETE FROM "{table_name}"')
@@ -341,31 +438,126 @@ class StateStore:
                     f'INSERT INTO "{table["table"]}" ({column_sql}) VALUES ({placeholders})',
                     table["rows"],
                 )
-            tick = self.advance()
-            resulting_root = self.state_root()
-            self.append_audit("snapshot_restore", resulting_root, "operator", tick)
-            self.append_telemetry(tick, "control", "signed snapshot restored")
-        return resulting_root
+            action_tick = self.advance()
+            post_state_root = self.state_root()
+            if post_state_root != snapshot_state_root:
+                raise RuntimeError("restored state does not match authenticated snapshot")
+            audit_entry_hash = self.append_audit(
+                action_kind, post_state_root, actor_scope, action_tick
+            )
+            audit_seq = int(
+                self.connection.execute("SELECT MAX(seq) FROM audit_chain").fetchone()[0]
+            )
+            proof_id = f"proof-{audit_seq:08d}"
+            proof_fields = {
+                "proof_id": proof_id,
+                "snapshot_id": snapshot_id,
+                "pre_state_root": pre_state_root,
+                "post_state_root": post_state_root,
+                "prior_audit_root": prior_audit_root,
+                "action_kind": action_kind,
+                "action_tick": action_tick,
+                "actor_scope": actor_scope,
+                "audit_seq": audit_seq,
+                "audit_entry_hash": audit_entry_hash,
+            }
+            auth_tag = self._authority.recovery_tag(proof_fields)
+            self.connection.execute(
+                """
+                INSERT INTO recovery_proofs(
+                    proof_id, snapshot_id, pre_state_root, post_state_root,
+                    prior_audit_root, action_kind, action_tick, actor_scope,
+                    audit_seq, audit_entry_hash, auth_tag
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    proof_id,
+                    snapshot_id,
+                    pre_state_root,
+                    post_state_root,
+                    prior_audit_root,
+                    action_kind,
+                    action_tick,
+                    actor_scope,
+                    audit_seq,
+                    audit_entry_hash,
+                    auth_tag,
+                ),
+            )
+            self.append_telemetry(
+                action_tick, "control", "authenticated snapshot restored"
+            )
+        return post_state_root
 
     def recovery_is_valid(self) -> bool:
-        latest = self.connection.execute(
-            """
-            SELECT action_kind, resulting_root
-            FROM audit_chain ORDER BY seq DESC LIMIT 1
-            """
-        ).fetchone()
-        if latest is None or latest[0] != "snapshot_restore":
+        if not self.audit_chain_valid():
             return False
-        matching_snapshot = self.connection.execute(
-            "SELECT snapshot_id FROM recovery_snapshots WHERE signed_root = ?",
-            (latest[1],),
+        proof = self.connection.execute(
+            """
+            SELECT proof_id, snapshot_id, pre_state_root, post_state_root,
+                   prior_audit_root, action_kind, action_tick, actor_scope,
+                   audit_seq, audit_entry_hash, auth_tag
+            FROM recovery_proofs ORDER BY audit_seq DESC LIMIT 1
+            """
         ).fetchone()
-        return (
-            latest[1] == self.state_root()
-            and matching_snapshot is not None
-            and self.snapshot_is_valid(matching_snapshot[0])
-            and self.audit_chain_valid()
-        )
+        if proof is None:
+            return False
+        (
+            proof_id,
+            snapshot_id,
+            pre_state_root,
+            post_state_root,
+            prior_audit_root,
+            action_kind,
+            action_tick,
+            actor_scope,
+            audit_seq,
+            audit_entry_hash,
+            auth_tag,
+        ) = proof
+        latest_audit_seq = self.connection.execute(
+            "SELECT MAX(seq) FROM audit_chain"
+        ).fetchone()[0]
+        if latest_audit_seq != audit_seq or self.state_root() != post_state_root:
+            return False
+        if not self.snapshot_is_valid(snapshot_id):
+            return False
+        snapshot_state = self.connection.execute(
+            "SELECT state_root FROM recovery_snapshots WHERE snapshot_id = ?",
+            (snapshot_id,),
+        ).fetchone()
+        if snapshot_state is None or snapshot_state[0] != post_state_root:
+            return False
+        proof_fields = {
+            "proof_id": proof_id,
+            "snapshot_id": snapshot_id,
+            "pre_state_root": pre_state_root,
+            "post_state_root": post_state_root,
+            "prior_audit_root": prior_audit_root,
+            "action_kind": action_kind,
+            "action_tick": action_tick,
+            "actor_scope": actor_scope,
+            "audit_seq": audit_seq,
+            "audit_entry_hash": audit_entry_hash,
+        }
+        if not self._authority.recovery_tag_is_valid(proof_fields, auth_tag):
+            return False
+        audit_entry = self.connection.execute(
+            """
+            SELECT action_kind, resulting_root, actor, entry_hash, at_tick
+            FROM audit_chain WHERE seq = ?
+            """,
+            (audit_seq,),
+        ).fetchone()
+        if audit_entry != (
+            action_kind,
+            post_state_root,
+            actor_scope,
+            audit_entry_hash,
+            action_tick,
+        ):
+            return False
+        return self._audit_root_through(audit_seq - 1) == prior_audit_root
 
     def count(self, table_name: str) -> int:
         if table_name not in SCHEMA_TABLES:
