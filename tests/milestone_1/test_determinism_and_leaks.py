@@ -11,7 +11,7 @@ from event_service_substrate import build_fixture
 from event_service_substrate.canonical import canonical_json
 from event_service_substrate.instance import TICKET
 
-from conftest import TEST_KEYS, TEST_SCOPES, authority_for_test
+from .conftest import TEST_KEYS, TEST_SCOPES, authority_for_test
 
 
 PUBLIC_ROOTS = (

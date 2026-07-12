@@ -10,7 +10,7 @@ from event_service_substrate.canonical import digest
 from event_service_substrate.instance import TICKET, VISIBLE_LOGS
 from event_service_substrate.store import SCHEMA_TABLES
 
-from conftest import authority_for_test
+from .conftest import authority_for_test
 
 
 def test_required_schema_and_explicit_telemetry_sequence(fixtures) -> None:

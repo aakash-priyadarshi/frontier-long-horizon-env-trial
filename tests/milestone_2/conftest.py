@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from event_service_substrate import RecoveryAuthority, build_fixture
-from agent_surface import AgentSession
+from agent_surface import ToolGateway
 
 
 TEST_KEYS = (
@@ -24,14 +24,12 @@ def _authority(index: int) -> RecoveryAuthority:
 
 @pytest.fixture
 def sessions(tmp_path: Path):
-    fixture_0 = build_fixture(tmp_path / "fixture-0", 0, _authority(0))
-    fixture_1 = build_fixture(tmp_path / "fixture-1", 1, _authority(1))
-    session_0 = AgentSession(fixture_0, 0, tmp_path / "session-0")
-    session_1 = AgentSession(fixture_1, 1, tmp_path / "session-1")
-    try:
+    session_0_dir = tmp_path / "session-0"
+    fixture_0_dir = tmp_path / "fixture-0"
+    session_1_dir = tmp_path / "session-1"
+    fixture_1_dir = tmp_path / "fixture-1"
+    with (
+        ToolGateway(0, session_0_dir, fixture_0_dir, _authority(0)) as session_0,
+        ToolGateway(1, session_1_dir, fixture_1_dir, _authority(1)) as session_1,
+    ):
         yield session_0, session_1
-    finally:
-        session_0.close()
-        session_1.close()
-        fixture_0.close()
-        fixture_1.close()

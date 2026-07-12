@@ -382,12 +382,18 @@ def main() -> int:
         type=Path,
         default=REPOSITORY_ROOT / "evidence" / "milestone-1-substrate.json",
     )
+    parser.add_argument(
+        "--source-commit",
+        default=None,
+        help="override the source commit the receipt is bound to (default: git HEAD)",
+    )
     args = parser.parse_args()
     try:
         pytest_command, test_count = _run_pytest()
         verification_command = subprocess.list2cmdline([sys.executable, *sys.argv])
+        source_commit = args.source_commit or _git_head()
         receipt = collect_live_evidence(
-            source_commit=_git_head(),
+            source_commit=source_commit,
             verification_command=verification_command,
             pytest_command=pytest_command,
             test_count=test_count,

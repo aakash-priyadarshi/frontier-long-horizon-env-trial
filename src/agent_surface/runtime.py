@@ -57,6 +57,7 @@ class RuntimeStore:
         self.handle = handle
         self.start_tick = store.tick()
         self._attempts: dict[str, int] = {}
+        self._cutpoint_triggered = False
         self._s2_cutpoint_pending = (cutpoint == "s2.exit") and (profile == 1)
         self._s5_cutpoint_pending = (cutpoint == "s5.exit") and (profile == 0)
         self._transient_pending = workload_id in ("P1", "P2") and cutpoint is None
@@ -151,6 +152,7 @@ class RuntimeStore:
             self._s2_cutpoint_pending = False
             self._append_trace(STAGE_CUTPOINT, event_id, command_key, occurrence_id)
             self._control(f"s2.exit cutpoint for {command_key}")
+            self._cutpoint_triggered = True
             raise Cutpoint(event_id=event_id)
         return event_id
 
@@ -218,6 +220,7 @@ class RuntimeStore:
             self._s5_cutpoint_pending = False
             self._append_trace(STAGE_CUTPOINT, event_id, command_key, occurrence_id)
             self._control(f"s5.exit cutpoint for {event_id}")
+            self._cutpoint_triggered = True
             raise Cutpoint(event_id=event_id, effect_id=effect_id)
         return effect_id
 
@@ -250,10 +253,24 @@ class RuntimeStore:
 class RuntimeEngine:
     """Deterministic fake-clock executor for public workloads and cutpoints."""
 
-    def __init__(self, store: StateStore, active_workspace: Path, profile: int) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        active_workspace: Path,
+        profile: int,
+        handle_salt: str,
+    ) -> None:
         self.store = store
         self.active_workspace = active_workspace
         self.profile = profile
+        self._handle_salt = handle_salt
+        self._active_config_root = self._config_root(self._active_settings_bytes())
+
+    def _active_settings_bytes(self) -> bytes:
+        return (self.active_workspace / "service" / "settings.toml").read_bytes()
+
+    def _config_root(self, config_bytes: bytes) -> str:
+        return digest("config-v1", config_bytes)
 
     def _read_config(self) -> dict[str, Any]:
         settings_path = self.active_workspace / "service" / "settings.toml"
@@ -279,6 +296,7 @@ class RuntimeEngine:
                     "alias": alias,
                     "tick": self.store.tick(),
                     "run_id": run_id,
+                    "handle_salt": self._handle_salt,
                 }
             ),
         )[:32]
@@ -429,7 +447,7 @@ class RuntimeEngine:
                 event_count=1,
                 effect_count=effects,
                 net_effect_count=effects * EFFECT_AMOUNT,
-                outcome="cutpoint",
+                outcome="cutpoint" if runtime._cutpoint_triggered else "diagnostic",
             )
         if runtime.cutpoint == "s2.exit":
             start_seq = self.store.connection.execute(
@@ -458,7 +476,7 @@ class RuntimeEngine:
                 event_count=len(rows),
                 effect_count=effect_count,
                 net_effect_count=effect_count * EFFECT_AMOUNT,
-                outcome="cutpoint",
+                outcome="cutpoint" if runtime._cutpoint_triggered else "diagnostic",
             )
         raise ToolError(f"unsupported cutpoint {runtime.cutpoint}")
 
@@ -485,14 +503,18 @@ class RuntimeEngine:
             "net_effect_count": net_effect_count,
             "cursor_seq": cursor,
             "outcome": outcome,
+            "active_config_root": self._active_config_root,
         }
 
     def run(
         self, workload_id: str, cutpoint: str | None = None, run_id: int = 0
     ) -> dict[str, Any]:
         """Execute a public workload or diagnostic cutpoint run."""
-        config = self._read_config()
-        attempt_budget = self._attempt_budget(config)
+        try:
+            config = self._read_config()
+            attempt_budget = self._attempt_budget(config)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ToolError("active workspace configuration invalid") from exc
         if workload_id in ("P1", "P2", "P3"):
             if cutpoint is not None:
                 raise ToolError("public workloads do not accept cutpoints")

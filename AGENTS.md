@@ -27,7 +27,7 @@ proceeds only through explicitly approved milestones.
 
 ## Current stage
 
-**Current stage: Milestone 1 closed. Milestone 2 interaction-layer implementation explicitly approved.**
+**Current stage: Milestone 2 audit remediation (PASS WITH FIXES). Implementing confirmed fixes for C1, M1-M5, and related non-blocking findings.**
 
 ### Allowed
 
@@ -234,7 +234,7 @@ that the evidence commit tested itself.
 - After pushing, confirm the local branch matches the intended remote branch and
   report the commit SHA.
 
-  ## Tooling profiles and MCP boundary
+## Tooling profiles and MCP boundary
 
 Tool access must be separated by role. Builder tools are not automatically part of
 the evaluated environment.

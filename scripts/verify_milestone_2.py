@@ -18,8 +18,8 @@ SOURCE_ROOT = REPOSITORY_ROOT / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from agent_surface import AgentSession  # noqa: E402
-from event_service_substrate import RecoveryAuthority, build_fixture  # noqa: E402
+from agent_surface import ToolGateway, ToolClient  # noqa: E402
+from event_service_substrate import RecoveryAuthority  # noqa: E402
 from event_service_substrate.canonical import canonical_json  # noqa: E402
 
 
@@ -37,15 +37,16 @@ def _authority(index: int) -> RecoveryAuthority:
     return RecoveryAuthority(_KEYS[index], _SCOPES[index])
 
 
-def _run_public_flow(session: AgentSession) -> dict[str, Any]:
-    """Execute the canonical pause/restore/run/deploy/resume flow."""
+def _run_public_flow(session: ToolClient) -> dict[str, Any]:
+    """Execute the canonical pause/restore/edit/deploy/run/resume flow."""
     session.recovery_pause()
     session.release_rollback("r0")
     session.recovery_restore()
+    session.workspace_edit("service/settings.toml", "[service]\nattempt_budget = 2\n")
+    session.release_deploy()
     r1 = session.runtime_run("P1")
     r2 = session.runtime_run("P2")
     r3 = session.runtime_run("P3")
-    session.release_deploy()
     session.recovery_resume()
     return {
         "P1": r1,
@@ -55,7 +56,7 @@ def _run_public_flow(session: AgentSession) -> dict[str, Any]:
     }
 
 
-def _diagnostic_evidence(session: AgentSession, workload_id: str) -> dict[str, Any]:
+def _diagnostic_evidence(session: ToolClient, workload_id: str) -> dict[str, Any]:
     """Run a diagnostic cutpoint and collect its trace/state evidence."""
     session.recovery_pause()
     session.release_rollback("r0")
@@ -94,10 +95,11 @@ def _diagnostic_evidence(session: AgentSession, workload_id: str) -> dict[str, A
 
 
 def _collect_session_evidence(
-    session: AgentSession, *, public: dict[str, Any], diagnostic: dict[str, Any]
+    session: ToolClient, *, public: dict[str, Any], diagnostic: dict[str, Any]
 ) -> dict[str, Any]:
+    status = session.release_status()
     return {
-        "initial_status": session.release_status(),
+        "initial_status": status,
         "public_flow": public,
         "diagnostic": diagnostic,
         "leak_probe": session.leak_probe(),
@@ -107,15 +109,23 @@ def _collect_session_evidence(
         "progress": session.state_inspect(
             "public", {"stream": "settlement"}, "progress"
         )["rows"][0],
-        "roots": {
-            "service_state": session._store.state_root(),
-            "runtime": session._store.runtime_root(),
-            "telemetry": session._store.telemetry_root(),
-            "audit": session._store.audit_root(),
-            "snapshot": session._store.snapshot_root(),
-            "deployment": session._store.deployment_root(),
-        },
+        "roots": status["roots"],
     }
+
+
+def _public_receipts_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    keys = (
+        "workload_id",
+        "cutpoint",
+        "outcome",
+        "effect_count",
+        "event_count",
+        "net_effect_count",
+        "cursor_seq",
+        "alias",
+        "active_config_root",
+    )
+    return all(a[k] == b[k] for k in keys)
 
 
 def _receipt_is_safe(receipt: dict[str, Any]) -> bool:
@@ -142,24 +152,26 @@ def collect_live_evidence(
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="milestone-2-live-") as directory:
         base = Path(directory)
-        fixture_a = build_fixture(base / "fixture-a", 0, _authority(0))
-        fixture_b = build_fixture(base / "fixture-b", 1, _authority(1))
-        session_a = AgentSession(fixture_a, 0, base / "session-a")
-        session_b = AgentSession(fixture_b, 1, base / "session-b")
-        try:
+        gateway_a = ToolGateway(0, base / "session-a", base / "fixture-a", _authority(0))
+        gateway_b = ToolGateway(1, base / "session-b", base / "fixture-b", _authority(1))
+        with gateway_a as session_a, gateway_b as session_b:
             public_a = _run_public_flow(session_a)
             public_b = _run_public_flow(session_b)
 
             diagnostic_a = _diagnostic_evidence(session_a, "s5")
             diagnostic_b = _diagnostic_evidence(session_b, "s2")
 
-            evidence_a = _collect_session_evidence(session_a, public=public_a, diagnostic=diagnostic_a)
-            evidence_b = _collect_session_evidence(session_b, public=public_b, diagnostic=diagnostic_b)
+            evidence_a = _collect_session_evidence(
+                session_a, public=public_a, diagnostic=diagnostic_a
+            )
+            evidence_b = _collect_session_evidence(
+                session_b, public=public_b, diagnostic=diagnostic_b
+            )
 
             public_receipts_equal = (
-                public_a["P1"] == public_b["P1"]
-                and public_a["P2"] == public_b["P2"]
-                and public_a["P3"] == public_b["P3"]
+                _public_receipts_equal(public_a["P1"], public_b["P1"])
+                and _public_receipts_equal(public_a["P2"], public_b["P2"])
+                and _public_receipts_equal(public_a["P3"], public_b["P3"])
             )
             service_state_diverges_after_diagnostics = (
                 evidence_a["roots"]["service_state"] != evidence_b["roots"]["service_state"]
@@ -235,11 +247,6 @@ def collect_live_evidence(
             if not _receipt_is_safe(receipt):
                 raise AssertionError("final receipt contains privileged or causal material")
             return receipt
-        finally:
-            session_a.close()
-            session_b.close()
-            fixture_a.close()
-            fixture_b.close()
 
 
 def write_receipt(receipt: dict[str, Any], output: Path) -> None:
@@ -262,7 +269,7 @@ def _git_head() -> str:
 
 
 def _run_pytest() -> tuple[str, int]:
-    command = [sys.executable, "-m", "pytest", "tests/milestone_2", "-q"]
+    command = [sys.executable, "-m", "pytest", "tests", "-q"]
     result = subprocess.run(
         command,
         cwd=REPOSITORY_ROOT,
@@ -272,7 +279,7 @@ def _run_pytest() -> tuple[str, int]:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode != 0:
-        raise RuntimeError("Milestone 2 pytest suite failed")
+        raise RuntimeError("pytest suite failed")
     match = re.search(r"(\d+) passed", result.stdout)
     if match is None:
         raise RuntimeError("could not determine passing test count")
@@ -286,12 +293,18 @@ def main() -> int:
         type=Path,
         default=REPOSITORY_ROOT / "evidence" / "milestone-2-interaction-layer.json",
     )
+    parser.add_argument(
+        "--source-commit",
+        default=None,
+        help="override the source commit the receipt is bound to (default: git HEAD)",
+    )
     args = parser.parse_args()
     try:
         pytest_command, test_count = _run_pytest()
         verification_command = subprocess.list2cmdline([sys.executable, *sys.argv])
+        source_commit = args.source_commit or _git_head()
         receipt = collect_live_evidence(
-            source_commit=_git_head(),
+            source_commit=source_commit,
             verification_command=verification_command,
             pytest_command=pytest_command,
             test_count=test_count,

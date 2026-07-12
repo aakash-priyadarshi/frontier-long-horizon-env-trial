@@ -213,10 +213,11 @@ def test_full_recovery_resume_closes_incident(sessions) -> None:
     a.recovery_pause()
     a.release_rollback("r0")
     a.recovery_restore()
+    a.workspace_edit("service/settings.toml", "[service]\nattempt_budget = 2\n")
+    a.release_deploy()
     a.runtime_run("P1")
     a.runtime_run("P2")
     a.runtime_run("P3")
-    a.release_deploy()
     tick = a.recovery_resume()
     status = a.release_status()
     assert status["intake"] == "open"

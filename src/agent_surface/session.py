@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Final
 
@@ -47,7 +51,8 @@ class AgentSession:
         self.initial_workspace = session_dir / "initial"
         self.metadata_path = session_dir / "metadata.json"
         self._workload_history: list[dict[str, Any]] = []
-        self._public_workload_pass: set[str] = set()
+        self._public_workload_pass: dict[str, set[str]] = {}
+        self._handle_salt = secrets.token_hex(32)
         self._closed = False
 
         session_dir.mkdir(parents=True, exist_ok=False)
@@ -155,7 +160,10 @@ class AgentSession:
             raise ToolError("intake must be paused")
 
     def _resolve_path(self, workspace: Path, path: str) -> Path:
-        target = (workspace / path).resolve()
+        try:
+            target = (workspace / path).resolve()
+        except (ValueError, OSError) as exc:
+            raise ToolError("invalid path") from exc
         if not str(target).startswith(str(workspace.resolve())):
             raise ToolError("path outside workspace")
         return target
@@ -180,7 +188,12 @@ class AgentSession:
         return "h_" + digest(
             "handle-v1",
             canonical_json(
-                {"alias": "Q-41", "window": [41, 45], "source": "initial"}
+                {
+                    "alias": "Q-41",
+                    "window": [41, 45],
+                    "source": "initial",
+                    "handle_salt": self._handle_salt,
+                }
             ),
         )[:32]
 
@@ -190,12 +203,15 @@ class AgentSession:
 
     def release_status(self) -> dict[str, Any]:
         """release.status: return release, workspace, and runtime status."""
+        active_config_root = self._active_config_root()
         public_canary_receipts = [
             r
             for r in self._workload_history
             if r["workload_id"] in ("P1", "P2", "P3")
+            and r.get("active_config_root") == active_config_root
         ]
-        all_public_pass = {"P1", "P2", "P3"} <= self._public_workload_pass
+        passes = self._public_workload_pass.get(active_config_root, set())
+        all_public_pass = {"P1", "P2", "P3"} <= passes
         intake = self._store.runtime_value("intake_state")
         incident = (
             "closed"
@@ -208,13 +224,23 @@ class AgentSession:
             "intake": intake,
             "active_revision": self._active_revision_label(),
             "active_source_root": self._active_source_root(),
-            "active_config_root": self._active_config_root(),
+            "active_config_root": active_config_root,
             "candidate_root": self._candidate_root(),
             "attempt_budget": self._attempt_budget(),
             "public_canary": "pass" if all_public_pass else "green_once",
             "incident": incident,
             "public_canary_receipts": public_canary_receipts,
             "tool_inventory": self.tool_inventory(),
+            "roots": {
+                "source": self._active_source_root(),
+                "config": active_config_root,
+                "service_state": self._store.state_root(),
+                "deployment": self._store.deployment_root(),
+                "runtime": self._store.runtime_root(),
+                "telemetry": self._store.telemetry_root(),
+                "audit": self._store.audit_root(),
+                "snapshot": self._store.snapshot_root(),
+            },
         }
 
     def workspace_read(self, path: str) -> str:
@@ -325,6 +351,8 @@ class AgentSession:
         return self._state_inspect_view(selector, view)
 
     def _selector_in_trace(self, handle: str, selector: dict[str, Any]) -> bool:
+        if not any(value is not None for value in selector.values()):
+            raise ToolError("selector is empty")
         for row in self._store.trace_selectors_for_handle(handle):
             if all(
                 row.get(key) == value
@@ -433,53 +461,77 @@ class AgentSession:
         """runtime.run: execute a deterministic public workload or diagnostic cutpoint."""
         self._require_intake_paused()
         run_id = len(self._workload_history)
-        engine = RuntimeEngine(self._store, self.active_workspace, self._profile)
-        receipt = engine.run(workload_id, cutpoint, run_id=run_id)
+        active_config_root = self._active_config_root()
+        engine = RuntimeEngine(
+            self._store, self.active_workspace, self._profile, self._handle_salt
+        )
+        try:
+            receipt = engine.run(workload_id, cutpoint, run_id=run_id)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ToolError("active workspace configuration invalid") from exc
         self._store.connection.commit()
         self._workload_history.append(receipt)
         if receipt["workload_id"] in ("P1", "P2", "P3") and receipt["outcome"] == "pass":
-            self._public_workload_pass.add(receipt["workload_id"])
+            self._public_workload_pass.setdefault(active_config_root, set()).add(
+                receipt["workload_id"]
+            )
         return receipt
 
     def recovery_pause(self) -> int:
         """recovery.pause: pause intake and return the tick."""
-        return self._store.pause_intake()
+        try:
+            return self._store.pause_intake()
+        except RuntimeError as exc:
+            raise ToolError(str(exc)) from exc
 
     def recovery_restore(self, snapshot_id: str = "S0") -> str:
         """recovery.restore: restore an authenticated snapshot."""
         self._require_intake_paused()
-        return self._store.restore_snapshot(snapshot_id)
+        try:
+            result = self._store.restore_snapshot(snapshot_id)
+        except (RuntimeError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+        self._public_workload_pass.pop(self._active_config_root(), None)
+        return result
 
     def release_rollback(self, revision: str) -> dict[str, Any]:
         """release.rollback: activate a known revision (r0 or r1)."""
         self._require_intake_paused()
         if revision not in ("r0", "r1"):
             raise ToolError("rollback supports r0 or r1")
-        code_root, config_bytes = self._revision_artifact(revision)
-        self._copy_workspace(self.initial_workspace, self.active_workspace)
-        settings_path = self.active_workspace / CONFIG_FILE
-        settings_path.write_bytes(config_bytes)
-        with self._store.connection:
-            self._store.connection.execute(
-                "UPDATE deployments SET status = 'available'"
+        try:
+            code_root, config_bytes = self._revision_artifact(revision)
+            self._copy_workspace(self.initial_workspace, self.active_workspace)
+            settings_path = self.active_workspace / CONFIG_FILE
+            settings_path.write_bytes(config_bytes)
+            with self._store.connection:
+                self._store.connection.execute(
+                    "UPDATE deployments SET status = 'available'"
+                )
+                self._store.connection.execute(
+                    """
+                    UPDATE deployments SET status = 'active', activated_tick = ?
+                    WHERE revision = ?
+                    """,
+                    (self._store.advance(), revision),
+                )
+            self._store.append_audit(
+                "deployment_rollback",
+                self._store.deployment_root(),
+                "operator",
+                self._store.tick(),
             )
-            self._store.connection.execute(
-                """
-                UPDATE deployments SET status = 'active', activated_tick = ?
-                WHERE revision = ?
-                """,
-                (self._store.advance(), revision),
-            )
-        self._store.append_audit(
-            "deployment_rollback", self._store.deployment_root(), "operator", self._store.tick()
-        )
-        self._store.connection.commit()
-        self._write_metadata()
-        return {
-            "revision": revision,
-            "active_source_root": self._active_source_root(),
-            "active_config_root": self._active_config_root(),
-        }
+            self._store.connection.commit()
+            self._write_metadata()
+            return {
+                "revision": revision,
+                "active_source_root": self._active_source_root(),
+                "active_config_root": self._active_config_root(),
+            }
+        except RuntimeError as exc:
+            raise ToolError(str(exc)) from exc
+        except OSError as exc:
+            raise ToolError("file operation failed") from exc
 
     def release_deploy(self) -> dict[str, Any]:
         """release.deploy: activate the candidate workspace."""
@@ -487,39 +539,52 @@ class AgentSession:
         candidate_source_root = self._candidate_root()
         candidate_config_bytes = self._candidate_settings_bytes()
         candidate_config_root = self._candidate_config_root()
-        self._copy_workspace(self.candidate_workspace, self.active_workspace)
-        with self._store.connection:
-            self._store.connection.execute(
-                """
-                UPDATE deployments
-                SET code_root = ?, config_root = ?, config_bytes = ?, activated_tick = ?
-                WHERE revision = 'candidate'
-                """,
-                (
-                    candidate_source_root,
-                    candidate_config_root,
-                    candidate_config_bytes.decode("utf-8"),
-                    self._store.advance(),
-                ),
+        if (
+            candidate_source_root == self._active_source_root()
+            and candidate_config_root == self._active_config_root()
+        ):
+            raise ToolError("no candidate changes to deploy")
+        try:
+            self._copy_workspace(self.candidate_workspace, self.active_workspace)
+            with self._store.connection:
+                self._store.connection.execute(
+                    """
+                    UPDATE deployments
+                    SET code_root = ?, config_root = ?, config_bytes = ?, activated_tick = ?
+                    WHERE revision = 'candidate'
+                    """,
+                    (
+                        candidate_source_root,
+                        candidate_config_root,
+                        candidate_config_bytes.decode("utf-8"),
+                        self._store.advance(),
+                    ),
+                )
+                self._store.connection.execute(
+                    "UPDATE deployments SET status = 'available'"
+                )
+                self._store.connection.execute(
+                    """
+                    UPDATE deployments SET status = 'active' WHERE revision = 'candidate'
+                    """
+                )
+            self._store.append_audit(
+                "deployment_activate",
+                self._store.deployment_root(),
+                "operator",
+                self._store.tick(),
             )
-            self._store.connection.execute(
-                "UPDATE deployments SET status = 'available'"
-            )
-            self._store.connection.execute(
-                """
-                UPDATE deployments SET status = 'active' WHERE revision = 'candidate'
-                """
-            )
-        self._store.append_audit(
-            "deployment_activate", self._store.deployment_root(), "operator", self._store.tick()
-        )
-        self._store.connection.commit()
-        self._write_metadata()
-        return {
-            "revision": "candidate",
-            "active_source_root": self._active_source_root(),
-            "active_config_root": self._active_config_root(),
-        }
+            self._store.connection.commit()
+            self._write_metadata()
+            return {
+                "revision": "candidate",
+                "active_source_root": self._active_source_root(),
+                "active_config_root": self._active_config_root(),
+            }
+        except RuntimeError as exc:
+            raise ToolError(str(exc)) from exc
+        except OSError as exc:
+            raise ToolError("file operation failed") from exc
 
     def recovery_resume(self) -> int:
         """recovery.resume: open intake after recovery and public checks."""
@@ -528,7 +593,8 @@ class AgentSession:
             raise ToolError("resume requires a deployed candidate")
         if not self._store.recovery_provenance_exists():
             raise ToolError("recovery provenance missing")
-        if not {"P1", "P2", "P3"} <= self._public_workload_pass:
+        passes = self._public_workload_pass.get(self._active_config_root(), set())
+        if not {"P1", "P2", "P3"} <= passes:
             raise ToolError("public workloads not passed")
         tick = self._store.advance()
         self._store.set_runtime_value("intake_state", "open")
@@ -559,22 +625,75 @@ class AgentSession:
     def leak_probe(self) -> dict[str, Any]:
         """Executable probe that the session does not contain privileged material."""
         problems: list[str] = []
-        if (self.session_dir / "service.sqlite3").exists():
-            problems.append("session contains fixture database")
-        if (self.session_dir / "tests").exists():
-            problems.append("session contains tests")
-        if (self.session_dir / "evidence").exists():
-            problems.append("session contains evidence")
-        if (self.session_dir / "src").exists():
-            problems.append("session contains privileged source")
-        text = " ".join(
-            [
-                self.session_id,
-                str(self.metadata_path.read_bytes(), errors="replace"),
-                self._active_source_root(),
-            ]
-        ).lower()
-        for token in ("profile", "member", "authority", "fixture_profile"):
-            if token in text:
-                problems.append(f"session metadata leaks token {token}")
+        forbidden_names = (
+            ("service.sqlite3", "session contains fixture database"),
+            ("tests", "session contains tests"),
+            ("evidence", "session contains evidence"),
+            ("src", "session contains privileged source"),
+            (".git", "session contains repository"),
+            ("agent_surface", "session contains agent package source"),
+            ("event_service_substrate", "session contains substrate package source"),
+        )
+        for name, message in forbidden_names:
+            if (self.session_dir / name).exists():
+                problems.append(message)
+
+        forbidden_tokens = [
+            "profile",
+            "member",
+            "authority",
+            "fixture_profile",
+            "event_service_substrate",
+            "agent_surface",
+            "service.sqlite3",
+            str(self._fixture.store.path),
+            str(self._fixture.root),
+        ]
+        for path in self.session_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace").lower()
+            except OSError:
+                continue
+            for token in forbidden_tokens:
+                if token and token.lower() in text:
+                    problems.append(f"session file {path.name} leaks {token!r}")
+
+        for var_name in ("fixture_profile", "EVENT_SERVICE_MEMBER"):
+            if var_name in os.environ:
+                problems.append(f"process environment contains {var_name}")
+
+        process_text = " ".join(sys.argv).lower()
+        for token in ("fixture_profile",):
+            if token in process_text:
+                problems.append(f"process arguments leak token {token}")
+
+        probe_path = self.session_dir / ".leak_probe_import.py"
+        probe_path.write_text(
+            "import sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "try:\n"
+            "    import event_service_substrate\n"
+            "    print('reachable')\n"
+            "except ImportError:\n"
+            "    try:\n"
+            "        import agent_surface\n"
+            "        print('reachable')\n"
+            "    except ImportError:\n"
+            "        print('isolated')\n",
+            encoding="utf-8",
+        )
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        result = subprocess.run(
+            [sys.executable, "-S", str(probe_path), str(self.session_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        probe_path.unlink(missing_ok=True)
+        if result.stdout.strip() == "reachable":
+            problems.append("session directory allows privileged package import")
+
         return {"passed": not problems, "problems": problems}

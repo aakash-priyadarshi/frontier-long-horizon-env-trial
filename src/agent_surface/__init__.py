@@ -1,10 +1,22 @@
 """Agent-visible interaction surface and deterministic runtime harness.
 
-The ``agent_surface`` package is the harness that implements the Milestone 2
-bounded tool interface. It is not part of the agent's editable workspace.
+The ``agent_surface`` package provides the process-separated JSON tool gateway
+that is the evaluated agent's only supported interface. The internal
+AgentSession is not exported as part of the agent-facing API.
 """
 
-from .errors import ToolError
-from .session import AgentSession
+from __future__ import annotations
 
-__all__ = ["AgentSession", "ToolError"]
+from typing import Any
+
+from .errors import ToolError
+
+__all__ = ["ToolClient", "ToolError", "ToolGateway"]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ToolClient" or name == "ToolGateway":
+        from .gateway import ToolClient, ToolGateway
+
+        return ToolClient if name == "ToolClient" else ToolGateway
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
