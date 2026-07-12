@@ -433,8 +433,8 @@
       "telemetry": "011b3f1f8256daaf48290acba403ddc07c0dc5594bbf2701655bfaa54b58f39f"
     }
   },
-  "tested_source_commit": "6f9d30a14321e8e0f711663b596dea793f7d4217",
-  "timestamp": "2026-07-12T10:58:29.563Z",
+  "tested_source_commit": "799f1fd7d036468e67cb266f8b3427c7efdcbd0a",
+  "timestamp": "2026-07-12T11:02:36.065Z",
   "verification": {
     "command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe scripts\\verify_milestone_2.py",
     "milestone_1_pytest_command": "C:\\project-bussiness\\frontier-long-horizon-env-trial\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
