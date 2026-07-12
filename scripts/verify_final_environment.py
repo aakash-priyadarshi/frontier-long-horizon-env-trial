@@ -359,8 +359,12 @@ def main() -> int:
                 "claim": "APEX-SWE task-pack compatibility plus local side-car scripted smoke; real apx model-driven harness execution NOT VERIFIED",
             },
             "docker": {
-                "available": docker_probe[1] == 0,
-                "status": "VERIFIED" if docker_probe[1] == 0 else "NOT VERIFIED",
+                "daemon_responds_to_version": docker_probe[1] == 0,
+                "status": "NOT VERIFIED",
+                "claim": (
+                    "docker version probe only; container mount/content isolation "
+                    "and evaluated-runtime image probes remain NOT VERIFIED"
+                ),
             },
             "upstream_apex_harness": "NOT VERIFIED",
             "outcome": "pass" if all_pass else "fail",
