@@ -103,5 +103,5 @@ The implemented root boundaries are documented in
 - Claims must be supported by reproducible evidence.
 - The public workspace must not disclose its privileged fixture selection.
 - Implementation work advances only through reviewed milestones.
-- Milestone 2 audit remediation applies only the confirmed findings and related
-  non-blocking fixes; later milestones are not begun automatically.
+- Milestone 2 is closed after verification and evidence regeneration; later
+  milestones are not begun automatically.
