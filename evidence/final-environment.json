@@ -321,84 +321,75 @@
   "schema_version": 5,
   "source_binding": {
     "validated": true,
-    "validated_source_sha": "cf0db4df970a29971efb13be0ef177030ce4b70e"
+    "validated_source_sha": "95acd24abe112aa95c9344bc15972ae9a72e1367"
   },
   "suites": {
     "adapters": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/adapters -q",
+      "command": "python -m pytest tests/adapters -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": ".............                                                            [100%]\n13 passed in 9.34s\n",
       "test_count": 13
     },
     "all": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
+      "command": "python -m pytest tests -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "........................................................................ [ 29%]\n........................................................................ [ 59%]\n........................................................................ [ 88%]\n............................                                             [100%]\n244 passed in 178.61s (0:02:58)\n",
-      "test_count": 244
+      "test_count": 245
     },
     "controls": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/controls -q",
+      "command": "python -m pytest tests/controls -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "................                                                         [100%]\n16 passed in 26.32s\n",
       "test_count": 16
     },
     "final_audit": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_audit -q",
+      "command": "python -m pytest tests/final_audit -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "........................................................................ [ 51%]\n.....................................................................    [100%]\n141 passed in 87.17s (0:01:27)\n",
-      "test_count": 141
+      "test_count": 142
     },
     "final_core": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_core -q",
+      "command": "python -m pytest tests/final_core -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "..                                                                       [100%]\n2 passed in 0.57s\n",
       "test_count": 2
     },
     "integrations": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/integrations -q",
+      "command": "python -m pytest tests/integrations -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": ".                                                                        [100%]\n1 passed in 1.44s\n",
       "test_count": 1
     },
     "milestone_1": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
+      "command": "python -m pytest tests/milestone_1 -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "...........................                                              [100%]\n27 passed in 25.84s\n",
       "test_count": 27
     },
     "milestone_2": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_2 -q",
+      "command": "python -m pytest tests/milestone_2 -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "..................................                                       [100%]\n34 passed in 36.14s\n",
       "test_count": 34
     },
     "soundness": {
-      "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/soundness -q",
+      "command": "python -m pytest tests/soundness -q",
       "exit_code": 0,
       "outcome": "pass",
       "passed": true,
-      "stdout_tail": "..........                                                               [100%]\n10 passed in 0.73s\n",
       "test_count": 10
     }
   },
-  "tested_source_commit": "cf0db4df970a29971efb13be0ef177030ce4b70e",
-  "timestamp": "2026-07-12T16:57:58.252723+00:00",
+  "tested_source_commit": "95acd24abe112aa95c9344bc15972ae9a72e1367",
+  "timestamp": "2026-07-13T09:27:50.488368+00:00",
   "verification": {
     "apex_sidecar": {
       "claim": "APEX-SWE task-pack compatibility plus local side-car scripted smoke; real apx model-driven harness execution NOT VERIFIED",
@@ -484,79 +475,70 @@
     "scripted_eval_score": 1.0,
     "suites": {
       "adapters": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/adapters -q",
+        "command": "python -m pytest tests/adapters -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": ".............                                                            [100%]\n13 passed in 9.34s\n",
         "test_count": 13
       },
       "all": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests -q",
+        "command": "python -m pytest tests -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "........................................................................ [ 29%]\n........................................................................ [ 59%]\n........................................................................ [ 88%]\n............................                                             [100%]\n244 passed in 178.61s (0:02:58)\n",
-        "test_count": 244
+        "test_count": 245
       },
       "controls": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/controls -q",
+        "command": "python -m pytest tests/controls -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "................                                                         [100%]\n16 passed in 26.32s\n",
         "test_count": 16
       },
       "final_audit": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_audit -q",
+        "command": "python -m pytest tests/final_audit -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "........................................................................ [ 51%]\n.....................................................................    [100%]\n141 passed in 87.17s (0:01:27)\n",
-        "test_count": 141
+        "test_count": 142
       },
       "final_core": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/final_core -q",
+        "command": "python -m pytest tests/final_core -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..                                                                       [100%]\n2 passed in 0.57s\n",
         "test_count": 2
       },
       "integrations": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/integrations -q",
+        "command": "python -m pytest tests/integrations -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": ".                                                                        [100%]\n1 passed in 1.44s\n",
         "test_count": 1
       },
       "milestone_1": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_1 -q",
+        "command": "python -m pytest tests/milestone_1 -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "...........................                                              [100%]\n27 passed in 25.84s\n",
         "test_count": 27
       },
       "milestone_2": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/milestone_2 -q",
+        "command": "python -m pytest tests/milestone_2 -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..................................                                       [100%]\n34 passed in 36.14s\n",
         "test_count": 34
       },
       "soundness": {
-        "command": "C:\\project-bussiness\\frontier-final-integration\\.venv\\Scripts\\python.exe -m pytest tests/soundness -q",
+        "command": "python -m pytest tests/soundness -q",
         "exit_code": 0,
         "outcome": "pass",
         "passed": true,
-        "stdout_tail": "..........                                                               [100%]\n10 passed in 0.73s\n",
         "test_count": 10
       }
     },
-    "total_test_count": 244,
+    "total_test_count": 245,
     "upstream_apex_harness": "NOT VERIFIED",
     "wrong_control_matrix": [
       {
