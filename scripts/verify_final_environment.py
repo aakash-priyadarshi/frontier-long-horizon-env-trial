@@ -36,6 +36,12 @@ def _run_command(cmd: list[str]) -> tuple[str, int]:
     return (result.stdout or "") + (result.stderr or ""), result.returncode
 
 
+def _receipt_command(cmd: list[str]) -> str:
+    """Return a reproducible command string without a machine-local Python path."""
+    recorded = ["python", *cmd[1:]] if cmd and cmd[0] == sys.executable else list(cmd)
+    return subprocess.list2cmdline(recorded)
+
+
 def _run_pytest(path: str = "tests", *args: Any, **kwargs: Any) -> dict[str, Any]:
     cmd = [sys.executable, "-m", "pytest", path, "-q"]
     stdout, rc = _run_command(cmd)
@@ -45,11 +51,10 @@ def _run_pytest(path: str = "tests", *args: Any, **kwargs: Any) -> dict[str, Any
     except ValueError:
         count = 0
     return {
-        "command": " ".join(cmd),
+        "command": _receipt_command(cmd),
         "exit_code": rc,
         "test_count": count,
         "passed": rc == 0,
-        "stdout_tail": stdout[-2000:],
     }
 
 
@@ -119,12 +124,13 @@ def _suite_receipt(suite: Any) -> dict[str, Any]:
             "exit_code": exit_code,
             "test_count": test_count,
             "passed": exit_code == 0,
-            "stdout_tail": stdout[-2000:],
         }
     passed = bool(suite.get("passed", suite.get("exit_code") == 0))
     return {
-        **suite,
+        "command": str(suite.get("command", "pytest")),
+        "exit_code": int(suite.get("exit_code", 1)),
         "test_count": int(suite.get("test_count", 0) or 0),
+        "passed": passed,
         "outcome": "pass" if passed else "fail",
     }
 

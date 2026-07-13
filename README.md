@@ -76,7 +76,11 @@ Run the full test suite:
 Regenerate the final machine-readable receipt from fresh live runs:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\verify_final_environment.py --output evidence\final-environment.json
+$source = git rev-parse HEAD
+
+.\.venv\Scripts\python.exe scripts\verify_final_environment.py `
+  --source-commit $source `
+  --output evidence\final-environment.json
 ```
 
 The `verify_final_environment.py` entrypoint validates source-commit binding, runs

@@ -54,9 +54,11 @@ def _invoke(
     monkeypatch: pytest.MonkeyPatch,
     repo: Path,
     args: list[str],
+    *,
+    pytest_stdout_tail: str = "1 passed in 0.01s",
 ) -> tuple[int, Path]:
     module = _load_verifier_module()
-    output = repo / "evidence" / "generated.json"
+    output = repo / "evidence" / "final-environment.json"
     if "--source-commit" in args and "--source-commit" not in inspect.getsource(module):
         # An unknown argparse flag is not evidence that a source object was
         # actually validated. Return success so every rejection assertion stays
@@ -71,7 +73,7 @@ def _invoke(
             "exit_code": 0,
             "test_count": 1,
             "passed": True,
-            "stdout_tail": "1 passed",
+            "stdout_tail": pytest_stdout_tail,
         },
     )
     monkeypatch.setattr(
@@ -239,3 +241,44 @@ def test_permitted_receipt_difference_does_not_dirty_source(
     )
     assert rc == 0
     assert json.loads(output.read_text(encoding="utf-8"))["tested_source_commit"] == source_repo["source"]
+
+
+def test_receipt_regeneration_is_equal_after_removing_only_timestamp(
+    monkeypatch: pytest.MonkeyPatch, source_repo: dict[str, str | Path]
+) -> None:
+    module = _load_verifier_module()
+    pytest_outputs = iter(("1 passed in 0.01s", "1 passed in 9.99s"))
+    monkeypatch.setattr(
+        module,
+        "_run_command",
+        lambda *a, **k: (next(pytest_outputs), 0),
+    )
+    first_suite = module._run_pytest("tests")
+    second_suite = module._run_pytest("tests")
+    assert first_suite == second_suite
+    assert first_suite["command"] == "python -m pytest tests -q"
+    assert "stdout_tail" not in first_suite
+
+    repo = source_repo["repo"]
+    args = ["--source-commit", str(source_repo["source"])]
+    rc, output = _invoke(
+        monkeypatch,
+        repo,  # type: ignore[arg-type]
+        args,
+        pytest_stdout_tail="1 passed in 0.01s",
+    )
+    assert rc == 0
+    first = json.loads(output.read_text(encoding="utf-8"))
+
+    rc, output = _invoke(
+        monkeypatch,
+        repo,  # type: ignore[arg-type]
+        args,
+        pytest_stdout_tail="1 passed in 9.99s",
+    )
+    assert rc == 0
+    second = json.loads(output.read_text(encoding="utf-8"))
+
+    first.pop("timestamp")
+    second.pop("timestamp")
+    assert first == second
