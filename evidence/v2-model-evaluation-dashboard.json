@@ -1,0 +1,92 @@
+{
+  "audited_environment_source": "95acd24abe112aa95c9344bc15972ae9a72e1367",
+  "dashboard": {
+    "lint": "pass",
+    "npm_audit_moderate": "pass",
+    "playwright": {
+      "count": 2,
+      "result": "pass"
+    },
+    "production_build": "pass",
+    "typecheck": "pass",
+    "unit_tests": {
+      "count": 18,
+      "result": "pass"
+    }
+  },
+  "hidden_state_leak_checks": "pass",
+  "limitations": [
+    "Hosted provider transports were not exercised because credentials were unavailable.",
+    "Ollama transport was not exercised against a running local model server.",
+    "APEX-SWE upstream execution and Docker execution remain NOT VERIFIED.",
+    "This is a local developer control plane, not production multi-tenant isolation."
+  ],
+  "local_urls": {
+    "api": "http://localhost:8000",
+    "dashboard": "http://localhost:3000"
+  },
+  "parent_v1_receipt_commit": "abcb015d320d3036d223ec1ba540662503acb588",
+  "provider_support": {
+    "anthropic": "implemented_not_verified_with_real_credentials",
+    "gemini": "implemented_not_verified_with_real_credentials",
+    "ollama": "implemented_not_verified_against_local_server",
+    "openai-compatible": "implemented_not_verified_with_real_credentials",
+    "scripted": "verified"
+  },
+  "providers_exercised": [
+    "scripted"
+  ],
+  "providers_not_verified": [
+    "openai-compatible",
+    "anthropic",
+    "gemini",
+    "ollama"
+  ],
+  "python": {
+    "all_tests": {
+      "count": 287,
+      "result": "pass"
+    },
+    "original_tests": {
+      "count": 245,
+      "result": "pass"
+    },
+    "v2_tests": {
+      "count": 42,
+      "result": "pass"
+    }
+  },
+  "result_digest_verification": true,
+  "schema_version": "2.0.0",
+  "score_authority_equivalence": true,
+  "scripted_valid": {
+    "api": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "browser": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "cli": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "direct": {
+      "actions": 20,
+      "score": 1.0,
+      "verdict": "pass"
+    }
+  },
+  "scripted_wrong_control": {
+    "failed_predicates": [
+      "member_hidden_workloads_pass"
+    ],
+    "score": 0.85,
+    "verdict": "partial"
+  },
+  "secret_leak_checks": "pass",
+  "source_commit": "12b10039d71bb6eacf9a14d91fdd44cf7755b5e5",
+  "timestamp": "2026-07-13T16:04:48.746285Z",
+  "version_one_tag_sha": "abcb015d320d3036d223ec1ba540662503acb588"
+}
