@@ -1,6 +1,7 @@
 # V2 Model Evaluation Dashboard Plan
 
-Status: planning only. No application scaffolding in this commit.
+Status: implemented on `feature/model-evaluation-dashboard`; verification evidence
+is generated only after the source commit is frozen.
 
 ## Frozen submission boundary
 
@@ -10,10 +11,10 @@ Status: planning only. No application scaffolding in this commit.
 - Model-evaluation and dashboard work is **version two** and is **not** part of
   `trial-submission-v1`.
 
-## Non-goals for this plan commit
+## Preserved non-goals
 
-- Do not implement a model-selection UI yet.
-- Do not create empty application scaffolding.
+- Do not place model-evaluation work on the frozen V1 tag or `main`.
+- Do not create a second scoring path in the service, CLI, or browser.
 - Do not merge APEX-SWE into this repository.
 - Do not compute, cache, or modify reward outside the strict verifier.
 

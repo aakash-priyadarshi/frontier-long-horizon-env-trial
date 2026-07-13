@@ -7,10 +7,14 @@ name = "event-service-substrate"
 version = "0.1.0"
 description = "Deterministic substrate for the approved verifier implementation spike"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.10,<3",
+    "uvicorn>=0.34,<1",
+]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9", "PyYAML>=6,<7"]
+test = ["pytest>=8,<9", "PyYAML>=6,<7", "httpx2>=2,<3", "pytest-asyncio>=0.25,<1"]
 adapters = ["gymnasium>=0.29,<1.1", "PyYAML>=6,<7"]
 
 [tool.setuptools]

@@ -6,10 +6,20 @@ artifacts and distinct privileged histories.
 
 ## Current status
 
-**Final remediation is implemented in this worktree and is awaiting post-fix
-independent audit. This is not a submission-readiness claim.** The environment now
-provides a canonical `training_ground` core, a strict `strict_verifier` grader,
-Gymnasium adapters, and APEX-SWE task-pack/side-car smoke compatibility.
+Version two adds a locally runnable model-evaluation control plane on
+`feature/model-evaluation-dashboard`. The existing `training_ground` environment
+and strict verifier remain the sole action and scoring authorities. Version one is
+frozen at `trial-submission-v1` (`abcb015d…`); V2 is additive and is not merged to
+`main`.
+
+The V2 product includes:
+
+- a FastAPI/SQLite evaluation service with SSE replay and immutable terminal records;
+- provider-neutral scripted, OpenAI-compatible, Anthropic, Gemini, and Ollama adapters;
+- a deterministic valid baseline and a wrong-control baseline over the real twelve tools;
+- a shared `python -m model_eval` CLI;
+- a responsive Next.js dashboard using Motion for React and Chart.js;
+- credential, hidden-state, digest, API, unit, and Playwright verification.
 
 The repository currently provides:
 
@@ -63,7 +73,37 @@ Python 3.12 is required. From PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
+
+cd apps\dashboard
+npm install
 ```
+
+## Run version two
+
+Start both services from the environment root:
+
+```powershell
+.\scripts\dev_v2.ps1
+```
+
+- Dashboard: `http://localhost:3000`
+- API and OpenAPI: `http://localhost:8000`, `http://localhost:8000/docs`
+
+Or use two terminals:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn evaluation_service.app:app --reload --port 8000
+cd apps\dashboard
+npm run dev
+```
+
+Credential-free CLI demo:
+
+```powershell
+.\.venv\Scripts\python.exe -m model_eval run --provider scripted --model scripted-valid --split eval --seed 0 --attempts 1
+```
+
+See `docs/V2_LOCAL_DEVELOPMENT.md` and `.env.example` for full configuration.
 
 ## Verify
 
