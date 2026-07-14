@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import OverviewPage from "@/app/page";
@@ -61,6 +61,30 @@ test("unsupported discovery remains neutral and manual model probes stay availab
   expect(screen.getAllByLabelText("Model name for tool test")).toHaveLength(2);
 });
 
+test("provider connection testing exposes skeletons before independent status transitions", async () => {
+  const initial = { ...anthropicProvider, capabilities: { ...anthropicProvider.capabilities, connection_test: true } };
+  const tested = {
+    ...initial,
+    models: [{ id: "model-tested", display_name: "Model tested" }],
+    endpoint: { state: "reachable", tested_at: "2026-07-14T00:00:00Z" },
+    authentication: { state: "valid", tested_at: "2026-07-14T00:00:00Z" },
+    model_discovery: { state: "discovered", count: 1, tested_at: "2026-07-14T00:00:00Z" },
+  };
+  let resolveTest!: (value: Response) => void;
+  const pending = new Promise<Response>(resolve => { resolveTest = resolve; });
+  vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => init?.method === "POST" ? pending : response({ items: [initial] })));
+  render(<SettingsPage />);
+  const card = await screen.findByRole("article", { name: "Anthropic provider settings" });
+  await userEvent.click(within(card).getByRole("button", { name: "Test connection" }));
+  expect(await within(card).findByLabelText("Endpoint check in progress")).toBeInTheDocument();
+  expect(within(card).getByLabelText("Authentication check in progress")).toBeInTheDocument();
+  expect(within(card).getByLabelText("Model discovery check in progress")).toBeInTheDocument();
+  resolveTest({ ok: true, status: 200, json: () => Promise.resolve({ provider: tested }) } as Response);
+  expect(await within(card).findByText("Reachable")).toBeInTheDocument();
+  expect(within(card).getByText("Valid")).toBeInTheDocument();
+  expect(within(card).getByText("Discovered (1)")).toBeInTheDocument();
+});
+
 test("ollama exposes only a copyable pull command and never starts a download", async () => {
   const ollama = {
     provider: "ollama", display_name: "Ollama (local)", configured: true, ready: false,
@@ -81,23 +105,32 @@ test("ollama exposes only a copyable pull command and never starts a download", 
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
-test("responsive navigation has accessible controls", () => {
+test("responsive navigation has accessible controls and an active route indicator", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => response({ items: [] })));
   render(<AppShell><p>Content</p></AppShell>);
   expect(screen.getByRole("navigation", { name: "Primary navigation" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Switch to light theme/ })).toBeInTheDocument();
+  const overview = screen.getByRole("link", { name: "Overview" });
+  expect(overview).toHaveAttribute("aria-current", "page");
+  expect(overview.querySelector(".shared-selection-indicator")).toBeInTheDocument();
   expect(screen.getByText("Content")).toBeInTheDocument();
+  expect(await screen.findByText("No active runs")).toBeInTheDocument();
 });
 
-test("theme choice is persisted without storing provider data", () => {
+test("theme choice is persisted without storing provider data", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => response({ items: [] })));
   render(<AppShell><p>Content</p></AppShell>);
+  await screen.findByText("No active runs");
   fireEvent.click(screen.getByRole("button", { name: /Switch to light theme/ }));
   expect(localStorage.getItem("frontier-theme")).toBe("light");
   expect([...Array(localStorage.length)].map((_, index) => localStorage.key(index))).toEqual(["frontier-theme"]);
 });
 
-test("reduced motion preference remains operable", () => {
+test("reduced motion preference remains operable", async () => {
+  vi.stubGlobal("fetch", vi.fn(() => response({ items: [] })));
   vi.mocked(window.matchMedia).mockImplementation((query: string) => ({ matches: query.includes("prefers-reduced-motion"), media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
   render(<AppShell><button>Immediate control</button></AppShell>);
+  await screen.findByText("No active runs");
   expect(screen.getByRole("button", { name: "Immediate control" })).toBeEnabled();
 });

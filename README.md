@@ -18,7 +18,8 @@ The V2 product includes:
 - provider-neutral scripted, OpenAI-compatible, Anthropic, Gemini, and Ollama adapters;
 - a deterministic valid baseline and a wrong-control baseline over the real twelve tools;
 - a shared `python -m model_eval` CLI;
-- a responsive Next.js dashboard using Motion for React and Chart.js;
+- a responsive Next.js dashboard using Motion for React and Chart.js, with
+  reduced-motion behavior, deterministic model colours, and chart/table alternatives;
 - credential, hidden-state, digest, API, unit, and Playwright verification.
 
 The repository currently provides:

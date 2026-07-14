@@ -83,6 +83,14 @@ export type Run = {
   candidate_diff_summary?: { changed_paths: string[]; file_count: number };
   authenticated_timeline?: TimelineEntry[];
   error_category?: string | null;
+  limits?: {
+    max_steps?: number;
+    max_model_calls?: number;
+    input_token_budget?: number | null;
+    output_token_budget?: number | null;
+    cost_budget?: number | null;
+    wall_clock_seconds?: number;
+  };
 };
 
 export type TimelineEntry = {

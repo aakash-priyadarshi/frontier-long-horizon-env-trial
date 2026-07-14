@@ -76,3 +76,17 @@ Local state is under `.frontier/` and is gitignored. Delete or redirect it only 
 you intentionally want a clean local history. The scripted provider never requires
 paid APIs or seeded fake dashboard results; it runs the real environment and strict
 verifier.
+
+## Browser and visual checks
+
+Use a current Chrome, Edge, Firefox, or Safari release. The Playwright suite uses
+Chromium and exercises the dashboard load, scripted launch, live batch result, run
+timeline, comparison charts and tables, mobile navigation, reduced motion, and
+memory-only credential flow. For a manual polish check, inspect widths 1440, 1024,
+768, and 390 pixels in both themes, then emulate reduced motion. Confirm that the
+browser console has no React or Chart.js errors.
+
+All comparison charts have an **Accessible data table** disclosure and CSV export;
+the comparison toolbar can replace all canvases with tables. Theme choice and safe
+recent model identifiers may be stored in `localStorage`; provider credentials are
+never stored there or in `sessionStorage`.

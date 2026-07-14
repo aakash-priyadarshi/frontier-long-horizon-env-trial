@@ -34,6 +34,12 @@ const localStorageMock = {
 };
 Object.defineProperty(window, "localStorage", { value: localStorageMock, configurable: true });
 Object.defineProperty(globalThis, "localStorage", { value: localStorageMock, configurable: true });
+Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn(() => Promise.resolve()) }, configurable: true });
+Object.defineProperty(URL, "createObjectURL", { value: vi.fn(() => "blob:test-export"), configurable: true });
+Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { value: vi.fn(), configurable: true });
+Object.defineProperty(HTMLDialogElement.prototype, "showModal", { value: function showModal(this: HTMLDialogElement) { this.setAttribute("open", ""); }, configurable: true });
+Object.defineProperty(HTMLDialogElement.prototype, "close", { value: function close(this: HTMLDialogElement) { this.removeAttribute("open"); }, configurable: true });
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/",
