@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from agent_surface.errors import ToolError
@@ -62,6 +63,13 @@ def _client_method(client: ToolClient, tool: str) -> Any:
 def dispatch_action(client: ToolClient, tool: str, arguments: dict[str, Any]) -> Any:
     """Dispatch a validated tool call to the process-separated gateway client."""
     method = _client_method(client, tool)
+    try:
+        inspect.signature(method).bind(**arguments)
+    except TypeError as exc:
+        raise EnvironmentError(
+            f"{tool}: invalid arguments",
+            code="invalid_arguments",
+        ) from exc
     try:
         return method(**arguments)
     except ToolError as exc:

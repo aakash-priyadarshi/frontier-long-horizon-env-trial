@@ -15,6 +15,7 @@ from evaluation_service.persistence import EvaluationStore, record_digest
 from evaluation_service.runner import EpisodeRunner
 from evaluation_service.schemas import EvaluationCreate, EvaluationLimits
 from evaluation_service.settings import Settings, dashboard_origins
+from model_runners.configuration import RuntimeProviderSettings
 from model_runners.protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from model_runners.errors import ModelRunnerError
 from model_runners.registry import ProviderRegistry
@@ -101,11 +102,11 @@ class InfiniteStatusAdapter:
         return ModelResponse(tool_calls=(ModelToolCall(f"call-{len(messages)}", "release.status", {}),))
 
 
-async def direct_episode(tmp_path: Path, adapter: object, *, limits: EvaluationLimits | None = None, cancelled: asyncio.Event | None = None) -> dict:
+async def direct_episode(tmp_path: Path, adapter: object, *, limits: EvaluationLimits | None = None, cancelled: asyncio.Event | None = None, provider: str = "scripted", model: str = "scripted-valid") -> dict:
     events: list[tuple[str, dict]] = []
     async def emit(name: str, data: dict) -> None:
         events.append((name, data))
-    request = EvaluationCreate(provider="scripted", model="scripted-valid", limits=limits or EvaluationLimits())
+    request = EvaluationCreate(provider=provider, model=model, limits=limits or EvaluationLimits())
     runner = EpisodeRunner(
         adapter=adapter, request=request, seed=0, attempt=1,
         environment_commit="a" * 40, application_commit="b" * 40,
@@ -115,6 +116,79 @@ async def direct_episode(tmp_path: Path, adapter: object, *, limits: EvaluationL
     return {"status": outcome.status, **outcome.payload, "events": events}
 
 
+class CapturingConfigAdapter:
+    provider = "ollama"
+
+    def __init__(self) -> None:
+        self.configs: list[ModelRequestConfig] = []
+
+    async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
+        self.configs.append(config)
+        return ModelResponse(finish_reason="stop")
+
+
+class CapabilityFollowingAdapter:
+    provider = "test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.received_handle: str | None = None
+
+    async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(tool_calls=(ModelToolCall("logs", "telemetry.logs", {"alias": "Q-41"}),))
+        if self.calls == 2:
+            tool_result = json.loads(messages[-1].content)
+            self.received_handle = tool_result["result"]["handle"]
+            return ModelResponse(tool_calls=(ModelToolCall("trace", "telemetry.trace", {"handle": self.received_handle}),))
+        return ModelResponse(finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_ollama_episodes_do_not_silently_disable_thinking(tmp_path: Path) -> None:
+    adapter = CapturingConfigAdapter()
+    outcome = await direct_episode(tmp_path, adapter, provider="ollama", model="qwen3:8b")
+    assert outcome["status"] == "completed"
+    assert adapter.configs
+    assert adapter.configs[0].reasoning_effort is None
+    assert outcome["model_turn_debug"][0]["tool_call_count"] == 0
+    assert outcome["tool_use_debug"]["primary_cause"]["code"] == "no_tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_trace_handle_reaches_model_but_not_public_record(tmp_path: Path) -> None:
+    adapter = CapabilityFollowingAdapter()
+    outcome = await direct_episode(tmp_path, adapter)
+    assert adapter.received_handle
+    assert outcome["status"] == "completed"
+    assert outcome["action_count"] == 2
+    assert all(entry["success"] for entry in outcome["authenticated_timeline"])
+    assert "handle" not in outcome["authenticated_timeline"][0]["result_summary"]
+    assert "handle" not in outcome["authenticated_timeline"][1]["arguments"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_successful_read_loop_gets_one_warning_then_terminates(tmp_path: Path) -> None:
+    outcome = await direct_episode(
+        tmp_path,
+        SequenceAdapter([
+            ("workspace.read", {"path": "service/contract.md"}),
+            ("workspace.read", {"path": "service/contract.md"}),
+            ("workspace.read", {"path": "service/contract.md"}),
+            ("workspace.edit", {"path": "service/settings.toml", "content": "unused"}),
+        ]),
+    )
+    assert outcome["status"] == "completed"
+    assert outcome["termination_reason"] == "model_repetitive_tool_loop"
+    assert outcome["action_count"] == 3
+    assert [item["code"] for item in outcome["runner_guidance"]] == [
+        "repeated_read_only_cycle_warning",
+        "repeated_read_only_cycle_terminated",
+    ]
+    assert outcome["tool_use_debug"]["primary_cause"]["code"] == "model_repetitive_tool_loop"
+
+
 @pytest.mark.asyncio
 async def test_unknown_tool_is_rejected_without_execution(tmp_path: Path) -> None:
     outcome = await direct_episode(tmp_path, UnknownToolAdapter())
@@ -122,6 +196,33 @@ async def test_unknown_tool_is_rejected_without_execution(tmp_path: Path) -> Non
     assert outcome["error_category"] == "unknown_tool"
     assert outcome["action_count"] == 0
     assert outcome["authoritative_reward"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_return_to_model_without_crashing_episode(tmp_path: Path) -> None:
+    outcome = await direct_episode(
+        tmp_path,
+        SequenceAdapter([
+            ("recovery.pause", {}),
+            ("recovery.restore", {"snapshot": "S0"}),
+        ]),
+    )
+    assert outcome["status"] == "completed"
+    assert outcome["error_category"] is None
+    assert outcome["termination_reason"] == "model_stopped"
+    assert outcome["action_count"] == 2
+    invalid = outcome["authenticated_timeline"][1]
+    assert invalid["tool"] == "recovery.restore"
+    assert invalid["success"] is False
+    assert invalid["error_code"] == "invalid_arguments"
+
+
+@pytest.mark.asyncio
+async def test_prose_only_model_stop_is_distinct_from_a_completed_tool_sequence(tmp_path: Path) -> None:
+    outcome = await direct_episode(tmp_path, UsageAdapter())
+    assert outcome["status"] == "completed"
+    assert outcome["termination_reason"] == "model_stopped_without_tool_call"
+    assert outcome["action_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -250,6 +351,41 @@ def app_settings(tmp_path: Path) -> Settings:
     return Settings(data_dir=tmp_path, database_path=tmp_path / "api.sqlite3")
 
 
+def test_orchestrator_rejects_model_with_failed_tool_compatibility(tmp_path: Path) -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    registry._discovered_models["ollama"] = [{
+        "id": "incompatible-local-model",
+        "display_name": "incompatible-local-model",
+        "digest": "digest-one",
+    }]
+    registry._tool_probes[("ollama", "incompatible-local-model")] = {
+        "state": "failed",
+        "tested_at": "2026-07-14T00:00:00Z",
+        "model": "incompatible-local-model",
+        "model_digest": "digest-one",
+        "error_code": "invalid_tool_call",
+    }
+    store = EvaluationStore(tmp_path / "failed-tool.sqlite3")
+    orchestrator = EvaluationOrchestrator(store, registry)
+    with pytest.raises(ValueError, match="failed the required tool compatibility"):
+        orchestrator.create(EvaluationCreate(provider="ollama", model="incompatible-local-model"))
+    store.close()
+
+
+def test_orchestrator_requires_current_passing_ollama_tool_test(tmp_path: Path) -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    registry._discovered_models["ollama"] = [{
+        "id": "untested-local-model",
+        "display_name": "untested-local-model",
+        "digest": "digest-one",
+    }]
+    store = EvaluationStore(tmp_path / "untested-tool.sqlite3")
+    orchestrator = EvaluationOrchestrator(store, registry)
+    with pytest.raises(ValueError, match="must pass the current tool compatibility"):
+        orchestrator.create(EvaluationCreate(provider="ollama", model="untested-local-model"))
+    store.close()
+
+
 def test_api_health_provider_status_and_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "api-secret-must-never-return"
     monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
@@ -266,6 +402,20 @@ def test_api_health_provider_status_and_validation(tmp_path: Path, monkeypatch: 
             json={"provider": "scripted", "model": "scripted-valid", "authoritative_reward": 1},
         )
         assert overwrite.status_code == 422
+
+        support = client.get("/api/providers/ollama/tool-support")
+        assert support.status_code == 200
+        assert support.headers["cache-control"] == "no-store"
+        assert any(item["id"] == "qwen3" for item in support.json()["items"])
+        assert support.json()["custom_probe"]["executes_tool"] is False
+
+        invalid_probe = client.post(
+            "/api/providers/ollama/tool-probe",
+            headers={"Origin": "http://localhost:3000"},
+            json={"model": "local-model", "options": {"context_window": 2_048}},
+        )
+        assert invalid_probe.status_code == 422
+        assert invalid_probe.json()["error"]["code"] == "validation_error"
 
 
 def test_session_credential_api_never_returns_or_persists_secret(
@@ -450,6 +600,14 @@ def test_api_scripted_run_score_export_and_comparison(tmp_path: Path) -> None:
         run_id = batch["runs"][0]["run_id"]
         run = client.get(f"/api/runs/{run_id}").json()
         assert run["authoritative_reward"] == 1.0
+        listed = client.get("/api/runs", params={"limit": 1}).json()
+        assert listed["total"] == 1
+        assert listed["limit"] == 1
+        assert listed["offset"] == 0
+        assert listed["items"][0]["run_id"] == run_id
+        assert listed["items"][0]["status"] == "completed"
+        assert "authenticated_timeline" not in listed["items"][0]
+        assert client.get("/api/runs", params={"limit": 0}).status_code == 422
         exported = client.get(f"/api/exports/{batch_id}.json")
         assert exported.status_code == 200
         text = exported.text

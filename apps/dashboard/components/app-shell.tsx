@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Activity, BarChart3, FlaskConical, Gauge, Menu, Moon, Settings, Sun, X } from "lucide-react";
+import { Activity, BarChart3, FlaskConical, Gauge, History, Menu, Moon, Settings, Sun, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Batch } from "@/lib/types";
 import { MotionButton, PageTransition, SharedSelectionIndicator, motionTransition } from "@/components/motion";
@@ -12,6 +12,7 @@ import { MotionButton, PageTransition, SharedSelectionIndicator, motionTransitio
 const links = [
   { href: "/", label: "Overview", icon: Gauge },
   { href: "/evaluations/new", label: "New evaluation", icon: FlaskConical },
+  { href: "/runs", label: "Runs", icon: History },
   { href: "/compare", label: "Compare", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
@@ -54,7 +55,7 @@ function GlobalRunStatus() {
   }, []);
   const content = <><Activity size={14} aria-hidden="true" /><span>{active.length ? `${active.length} active batch${active.length === 1 ? "" : "es"}` : "No active runs"}</span></>;
   return active[0]
-    ? <Link className="global-run-status active" href={`/evaluations/${active[0].batch_id}`} aria-live="polite">{content}</Link>
+    ? <Link className="global-run-status active" href="/runs" aria-live="polite">{content}</Link>
     : <span className="global-run-status" aria-live="polite">{content}</span>;
 }
 

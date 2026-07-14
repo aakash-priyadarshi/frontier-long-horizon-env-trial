@@ -17,6 +17,7 @@ class ModelConfiguration(BaseModel):
 
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int = Field(default=4096, ge=1, le=131_072)
+    context_window: int | None = Field(default=None, ge=4_096, le=262_144)
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     timeout_seconds: float = Field(default=60, ge=1, le=900)
     max_retries: int = Field(default=2, ge=0, le=10)
@@ -73,10 +74,31 @@ class ProviderSessionConfiguration(BaseModel):
         return self
 
 
+class ProviderToolProbeOptions(BaseModel):
+    """Bounded, non-secret options for the isolated Ollama fake-tool probe."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_window: int = Field(default=16_384, ge=4_096, le=262_144)
+    max_output_tokens: int = Field(default=512, ge=128, le=8_192)
+    retry_output_tokens: int | None = Field(default=2_048, ge=128, le=8_192)
+    timeout_seconds: int = Field(default=120, ge=10, le=300)
+    temperature: float = Field(default=0, ge=0, le=2)
+    thinking: Literal["default", "off", "low", "medium", "high"] = "off"
+    prompt_style: Literal["strict", "minimal", "schema_guided"] = "strict"
+
+    @model_validator(mode="after")
+    def validate_retry_budget(self) -> "ProviderToolProbeOptions":
+        if self.retry_output_tokens is not None and self.retry_output_tokens < self.max_output_tokens:
+            raise ValueError("retry_output_tokens must be at least max_output_tokens")
+        return self
+
+
 class ProviderToolProbeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")
+    options: ProviderToolProbeOptions | None = None
 
 
 class BatchSummary(BaseModel):

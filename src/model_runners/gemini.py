@@ -11,7 +11,7 @@ import urllib.request
 from typing import Any
 
 from .configuration import RuntimeProviderSettings, secret_for
-from .errors import ModelRunnerError, ProviderConfigurationError
+from .errors import ModelRunnerError, ProviderConfigurationError, ProviderTimeout
 from .protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from .tool_conversion import gemini_tools
 from .usage import estimate_cost
@@ -39,7 +39,11 @@ class GeminiAdapter:
                 code="provider_authentication_failed" if exc.code in {401, 403} else "provider_http_error",
                 retryable=exc.code in {408, 429} or exc.code >= 500,
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            raise ProviderTimeout() from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProviderTimeout() from exc
             raise ModelRunnerError("provider request failed", code="provider_unreachable", retryable=True) from exc
 
     async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
@@ -61,6 +65,13 @@ class GeminiAdapter:
         if config.temperature is not None:
             generation["temperature"] = 0 if config.deterministic else config.temperature
         payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "tools": gemini_tools(tools), "generationConfig": generation}
+        if config.required_tool:
+            payload["toolConfig"] = {
+                "functionCallingConfig": {
+                    "mode": "ANY",
+                    "allowedFunctionNames": [config.required_tool],
+                }
+            }
         started = time.perf_counter()
         body = await asyncio.to_thread(self._request, payload, config)
         latency = (time.perf_counter() - started) * 1000

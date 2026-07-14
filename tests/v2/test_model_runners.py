@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import socket
 import urllib.error
@@ -9,15 +10,20 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from evaluation_service.runner import PROMPT_VERSION, SYSTEM_PROMPT, public_tools
+from evaluation_service.schemas import ProviderToolProbeOptions
+from model_runners.anthropic import AnthropicAdapter
 from model_runners.configuration import RuntimeProviderSettings, configured, custom_headers_for, validate_provider_base_url
-from model_runners.errors import MalformedModelResponse, ModelRunnerError, ProviderConfigurationError
+from model_runners.errors import MalformedModelResponse, ModelRunnerError, ProviderConfigurationError, ProviderTimeout
+from model_runners.gemini import GeminiAdapter
+from model_runners.ollama_support import limitation_for_model, profile_for_model, public_support_catalog, support_for_model
 from model_runners.openai_compatible import OpenAICompatibleAdapter
-from model_runners.protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelToolCall
+from model_runners.protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from model_runners.registry import ProviderRegistry
 from model_runners.scripted import ScriptedAdapter
 from model_runners.tool_conversion import (
     anthropic_tools,
     gemini_tools,
+    ollama_messages,
     openai_messages,
     openai_tools,
     parse_json_arguments,
@@ -110,7 +116,7 @@ def test_concurrent_provider_updates_never_cross_credentials() -> None:
     assert settings.secret_for("gemini").startswith("gemini-only-")  # type: ignore[union-attr]
 
 
-def test_provider_status_dimensions_are_independent_and_unsupported_discovery_is_neutral() -> None:
+def test_provider_status_dimensions_are_independent_and_cloud_discovery_is_available() -> None:
     registry = ProviderRegistry(RuntimeProviderSettings({}))
     ollama = registry.status("ollama")
     assert ollama["credential"]["state"] == "not_required"
@@ -120,7 +126,9 @@ def test_provider_status_dimensions_are_independent_and_unsupported_discovery_is
     assert ollama["tool_calling"]["state"] == "not_tested"
     for provider in ("anthropic", "gemini"):
         status = registry.status(provider)
-        assert status["model_discovery"]["state"] == "unsupported"
+        assert status["model_discovery"]["state"] == "not_tested"
+        assert status["capabilities"]["model_discovery"] is True
+        assert status["capabilities"]["connection_test"] is True
         assert status["capabilities"]["custom_model"] is True
         assert status["capabilities"]["tool_probe"] is True
 
@@ -150,6 +158,60 @@ def test_provider_tool_conversions() -> None:
 def test_openai_message_conversion_preserves_tool_result() -> None:
     payload = openai_messages([ModelMessage("tool", "{}", tool_call_id="call-1", name="release.status")])
     assert payload == [{"role": "tool", "content": "{}", "tool_call_id": "call-1", "name": "release.status"}]
+
+
+def test_ollama_reasoning_state_is_replayed_only_when_explicitly_enabled() -> None:
+    message = ModelMessage(
+        "assistant",
+        tool_calls=(ModelToolCall("call-1", "release.status", {}),),
+        reasoning="private planning state",
+    )
+    hosted = openai_messages([message])
+    ollama = openai_messages([message], include_reasoning=True)
+    assert "reasoning" not in hosted[0]
+    assert ollama[0]["reasoning"] == "private planning state"
+    native = ollama_messages([message])
+    assert native[0]["thinking"] == "private planning state"
+    assert native[0]["tool_calls"][0]["function"]["arguments"] == {}
+
+
+@pytest.mark.asyncio
+async def test_native_ollama_adapter_sets_context_and_preserves_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = OpenAICompatibleAdapter(provider="ollama")
+
+    def request(payload: dict, config: ModelRequestConfig) -> dict:
+        assert payload["stream"] is False
+        assert payload["think"] == "low"
+        assert payload["options"]["num_ctx"] == 16_384
+        assert payload["options"]["num_predict"] == 2_048
+        assert payload["messages"][0]["thinking"] == "prior private state"
+        return {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "thinking": "next private state",
+                "tool_calls": [{"function": {"name": "release.status", "arguments": {}}}],
+            },
+            "prompt_eval_count": 100,
+            "eval_count": 20,
+            "done_reason": "stop",
+        }
+
+    monkeypatch.setattr(adapter, "_request_ollama", request)
+    response = await adapter.complete(
+        messages=[ModelMessage("assistant", reasoning="prior private state")],
+        tools=public_tools(),
+        config=ModelRequestConfig(
+            model="qwen3:8b",
+            context_window=16_384,
+            max_output_tokens=2_048,
+            reasoning_effort="low",
+        ),
+    )
+    assert response.tool_calls[0].name == "release.status"
+    assert response.reasoning == "next private state"
+    assert response.finish_reason == "tool_calls"
+    assert response.reasoning_tokens > 0
 
 
 def test_tool_call_parser_requires_object_arguments() -> None:
@@ -219,6 +281,38 @@ def test_provider_errors_never_include_authorization_headers(monkeypatch: pytest
     assert "Bearer" not in message
 
 
+def test_all_hosted_adapters_classify_wrapped_transport_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrapped_timeout = urllib.error.URLError(TimeoutError("safe timeout"))
+
+    class Opener:
+        def open(self, request, timeout):  # type: ignore[no-untyped-def]
+            raise wrapped_timeout
+
+    openai = OpenAICompatibleAdapter(
+        provider="ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        settings=RuntimeProviderSettings({}),
+    )
+    monkeypatch.setattr("model_runners.openai_compatible.urllib.request.build_opener", lambda *args: Opener())
+    with pytest.raises(ProviderTimeout):
+        openai._request({}, ModelRequestConfig(model="test", max_retries=0))
+
+    def timed_out(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise wrapped_timeout
+
+    anthropic = AnthropicAdapter(settings=RuntimeProviderSettings({"ANTHROPIC_API_KEY": "test-key"}))
+    monkeypatch.setattr("model_runners.anthropic.urllib.request.urlopen", timed_out)
+    with pytest.raises(ProviderTimeout):
+        anthropic._request({}, ModelRequestConfig(model="test", max_retries=0))
+
+    gemini = GeminiAdapter(settings=RuntimeProviderSettings({"GEMINI_API_KEY": "test-key"}))
+    monkeypatch.setattr("model_runners.gemini.urllib.request.urlopen", timed_out)
+    with pytest.raises(ProviderTimeout):
+        gemini._request({}, ModelRequestConfig(model="test", max_retries=0))
+
+
 @pytest.mark.asyncio
 async def test_ollama_offline_state_is_not_reported_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     registry = ProviderRegistry(RuntimeProviderSettings({}))
@@ -281,6 +375,63 @@ def test_ollama_tags_populate_models_and_malformed_payload_is_rejected(monkeypat
         registry._request_models("ollama")
 
 
+@pytest.mark.parametrize(
+    ("provider", "environment", "expected_url", "expected_header", "body", "expected"),
+    [
+        (
+            "anthropic",
+            {"ANTHROPIC_API_KEY": "anthropic-discovery-secret"},
+            "https://api.anthropic.com/v1/models?limit=100",
+            ("X-api-key", "anthropic-discovery-secret"),
+            {"data": [{"id": "claude-test", "display_name": "Claude Test"}]},
+            [{"id": "claude-test", "display_name": "Claude Test"}],
+        ),
+        (
+            "gemini",
+            {"GEMINI_API_KEY": "gemini-discovery-secret"},
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
+            ("X-goog-api-key", "gemini-discovery-secret"),
+            {"models": [
+                {"name": "models/gemini-test", "baseModelId": "gemini-test", "displayName": "Gemini Test", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/embedding-test", "baseModelId": "embedding-test", "supportedGenerationMethods": ["embedContent"]},
+            ]},
+            [{"id": "gemini-test", "display_name": "Gemini Test"}],
+        ),
+    ],
+)
+def test_hosted_model_discovery_uses_provider_auth_without_secret_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    environment: dict[str, str],
+    expected_url: str,
+    expected_header: tuple[str, str],
+    body: dict,
+    expected: list[dict],
+) -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings(environment))
+
+    class Response:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *args):  # type: ignore[no-untyped-def]
+            return False
+
+        def read(self, size: int = -1) -> bytes:
+            return json.dumps(body).encode()
+
+    class Opener:
+        def open(self, request, timeout):  # type: ignore[no-untyped-def]
+            assert request.full_url == expected_url
+            assert environment[next(iter(environment))] not in request.full_url
+            assert request.get_header(expected_header[0]) == expected_header[1]
+            assert timeout == 10
+            return Response()
+
+    monkeypatch.setattr("model_runners.registry.urllib.request.build_opener", lambda *handlers: Opener())
+    assert registry._request_models(provider) == expected
+
+
 @pytest.mark.asyncio
 async def test_ollama_digest_change_invalidates_tool_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     registry = ProviderRegistry(RuntimeProviderSettings({}))
@@ -294,13 +445,33 @@ async def test_ollama_digest_change_invalidates_tool_probe(monkeypatch: pytest.M
 
         async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
             assert [tool.name for tool in tools] == ["frontier_probe"]
+            assert tools[0].input_schema == {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "type": "string",
+                        "description": "The exact value frontier-probe.",
+                    }
+                },
+                "required": ["value"],
+            }
             assert "environment" not in messages[-1].content.lower()
+            assert config.reasoning_effort == "none"
+            assert config.temperature == 0
+            assert config.max_output_tokens == 512
+            assert config.context_window == 16_384
+            assert config.timeout_seconds == 120
+            assert config.max_retries == 0
+            assert config.deterministic is True
+            assert config.required_tool is None
             return ModelResponse(tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),))
 
     registry._factories["ollama"] = ProbeAdapter
     result = await registry.probe_tool_call("ollama", "local-model")
     assert result["state"] == "passed"
     assert result["model_digest"] == "digest-one"
+    assert result["profile"]["context_window"] == 16_384
+    assert result["observed"]["tool_call_count"] == 1
     assert registry.models("ollama")[0]["tool_compatibility"]["state"] == "passed"
 
     discovered[0]["digest"] = "digest-two"
@@ -309,6 +480,297 @@ async def test_ollama_digest_change_invalidates_tool_probe(monkeypatch: pytest.M
     assert compatibility["state"] == "not_tested"
     assert compatibility["invalidated"] is True
     assert registry.status("ollama")["tool_calling"]["state"] == "not_tested"
+
+
+@pytest.mark.asyncio
+async def test_ollama_thinking_model_probe_disables_reasoning_before_tool_call() -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+
+    class ThinkingAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            if config.reasoning_effort != "none":
+                return ModelResponse(finish_reason="length", reasoning_tokens=config.max_output_tokens)
+            return ModelResponse(
+                tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),),
+                finish_reason="tool_calls",
+            )
+
+    registry._factories["ollama"] = ThinkingAdapter
+    result = await registry.probe_tool_call("ollama", "qwen3:8b")
+    assert result["state"] == "passed"
+    assert result["error_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_custom_ollama_probe_applies_only_bounded_inference_options() -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+
+    class CustomProbeAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            assert [tool.name for tool in tools] == ["frontier_probe"]
+            assert "native function-call format" in messages[0].content
+            assert config.context_window == 8_192
+            assert config.max_output_tokens == 768
+            assert config.timeout_seconds == 90
+            assert config.temperature == 0.2
+            assert config.reasoning_effort == "low"
+            return ModelResponse(
+                tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),),
+                finish_reason="tool_calls",
+            )
+
+    registry._factories["ollama"] = CustomProbeAdapter
+    result = await registry.probe_tool_call(
+        "ollama",
+        "unlisted/model:tag",
+        options={
+            "context_window": 8_192,
+            "max_output_tokens": 768,
+            "retry_output_tokens": None,
+            "timeout_seconds": 90,
+            "temperature": 0.2,
+            "thinking": "low",
+            "prompt_style": "schema_guided",
+        },
+    )
+    assert result["state"] == "passed"
+    assert result["profile"]["prompt_style"] == "schema_guided"
+    assert result["observed"] == {
+        "finish_reason": "tool_calls",
+        "tool_call_count": 1,
+        "returned_text": False,
+        "returned_reasoning": False,
+    }
+
+
+def test_tool_probe_schema_rejects_unbounded_or_incoherent_options() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 262144"):
+        ProviderToolProbeOptions(context_window=1_000_000)
+    with pytest.raises(ValueError, match="retry_output_tokens must be at least"):
+        ProviderToolProbeOptions(max_output_tokens=2_048, retry_output_tokens=512)
+
+
+def test_ollama_support_catalog_is_explicit_and_excludes_legacy_deepseek_template() -> None:
+    catalog = public_support_catalog()
+    assert {item["id"] for item in catalog["items"]} >= {
+        "qwen3", "deepseek-r1-0528-qwen3", "llama3.1", "llama3.2", "qwen2.5", "granite3.3"
+    }
+    assert support_for_model("qwen3:8b")["support"] == "locally_verified"
+    assert profile_for_model("gpt-oss:20b")["thinking"] == "low"
+    legacy = "deepseek-r1:8b-llama-distill-q4_K_M"
+    assert support_for_model(legacy) is None
+    assert limitation_for_model(legacy)["code"] == "legacy_template_without_tool_definitions"
+    assert catalog["custom_probe"]["isolated_tool"] == "frontier_probe"
+    assert catalog["custom_probe"]["executes_tool"] is False
+    assert catalog["custom_probe"]["stores_model_output"] is False
+
+
+def test_ollama_out_of_memory_response_maps_to_safe_diagnostic(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret_provider_text = "cudaMalloc failed: out of memory at private-local-path"
+
+    class FailingOpener:
+        def open(self, request, timeout):  # type: ignore[no-untyped-def]
+            raise urllib.error.HTTPError(
+                request.full_url,
+                500,
+                "Internal Server Error",
+                {},
+                io.BytesIO(json.dumps({"error": secret_provider_text}).encode()),
+            )
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_: FailingOpener())
+    adapter = OpenAICompatibleAdapter(provider="ollama")
+    with pytest.raises(ModelRunnerError) as caught:
+        adapter._request_ollama(
+            {"model": "local-model", "messages": []},
+            ModelRequestConfig(model="local-model"),
+        )
+    assert caught.value.code == "provider_out_of_memory"
+    assert "model and requested context" in str(caught.value)
+    assert "private-local-path" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "environment"),
+    [
+        ("openai-compatible", {"OPENAI_API_KEY": "test-openai-key"}),
+        ("anthropic", {"ANTHROPIC_API_KEY": "test-anthropic-key"}),
+        ("gemini", {"GEMINI_API_KEY": "test-gemini-key"}),
+    ],
+)
+async def test_hosted_tool_probes_use_provider_neutral_request_options(
+    provider: str,
+    environment: dict[str, str],
+) -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings(environment))
+
+    class HostedAdapter:
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            assert config.reasoning_effort is None
+            assert config.temperature is None
+            assert config.max_output_tokens == 512
+            assert config.timeout_seconds == 60
+            assert config.max_retries == 0
+            assert config.deterministic is False
+            assert config.required_tool == "frontier_probe"
+            return ModelResponse(
+                tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),),
+                finish_reason="tool_calls",
+            )
+
+    registry._factories[provider] = HostedAdapter
+    result = await registry.probe_tool_call(provider, "provider-model")
+    assert result["state"] == "passed"
+    assert result["error_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_tool_probe_reports_truncation_separately_from_invalid_tool_calls() -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    requests: list[tuple[int, float]] = []
+
+    class TruncatedAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            requests.append((config.max_output_tokens, config.timeout_seconds))
+            return ModelResponse(finish_reason="length")
+
+    registry._factories["ollama"] = TruncatedAdapter
+    result = await registry.probe_tool_call("ollama", "thinking-model")
+    assert result["state"] == "failed"
+    assert result["error_code"] == "probe_output_truncated"
+    assert requests == [(512, 120), (2048, 180)]
+
+
+@pytest.mark.asyncio
+async def test_ollama_probe_recovers_when_thinking_exhausts_initial_budget() -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    requests: list[int] = []
+
+    class VerboseThinkingAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            requests.append(config.max_output_tokens)
+            if config.max_output_tokens == 512:
+                return ModelResponse(finish_reason="length", reasoning_tokens=512)
+            return ModelResponse(
+                tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),),
+                finish_reason="tool_calls",
+            )
+
+    registry._factories["ollama"] = VerboseThinkingAdapter
+    result = await registry.probe_tool_call("ollama", "verbose-thinking-model")
+    assert result["state"] == "passed"
+    assert result["error_code"] is None
+    assert requests == [512, 2048]
+
+
+@pytest.mark.asyncio
+async def test_model_timeout_does_not_falsely_mark_reachable_endpoint_offline() -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    registry._endpoint["ollama"] = {"state": "reachable", "tested_at": "earlier"}
+
+    class SlowAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            raise ProviderTimeout()
+
+    registry._factories["ollama"] = SlowAdapter
+    result = await registry.probe_tool_call("ollama", "slow-model")
+    assert result["state"] == "failed"
+    assert result["error_code"] == "provider_timeout"
+    assert registry.status("ollama")["endpoint"]["state"] == "reachable"
+
+
+@pytest.mark.asyncio
+async def test_hosted_adapters_force_only_the_isolated_probe_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = ModelTool(
+        "frontier_probe",
+        "Harmless probe.",
+        {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
+    )
+    config = ModelRequestConfig(
+        model="provider-model",
+        max_output_tokens=512,
+        required_tool="frontier_probe",
+    )
+    messages = [ModelMessage("system", "Compatibility check."), ModelMessage("user", "Call the tool.")]
+
+    openai = OpenAICompatibleAdapter()
+
+    def openai_request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "frontier_probe"},
+        }
+        assert "temperature" not in payload
+        assert "reasoning_effort" not in payload
+        return ({
+            "choices": [{
+                "message": {"tool_calls": [{
+                    "id": "openai-probe",
+                    "function": {"name": "frontier_probe", "arguments": '{"value":"frontier-probe"}'},
+                }]},
+                "finish_reason": "tool_calls",
+            }]
+        }, None)
+
+    monkeypatch.setattr(openai, "_request", openai_request)
+    openai_response = await openai.complete(messages=messages, tools=[tool], config=config)
+    assert openai_response.tool_calls[0].name == "frontier_probe"
+
+    anthropic = AnthropicAdapter()
+
+    def anthropic_request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["tool_choice"] == {"type": "tool", "name": "frontier_probe"}
+        assert "temperature" not in payload
+        return {
+            "content": [{
+                "type": "tool_use",
+                "id": "anthropic-probe",
+                "name": "frontier_probe",
+                "input": {"value": "frontier-probe"},
+            }],
+            "stop_reason": "tool_use",
+        }
+
+    monkeypatch.setattr(anthropic, "_request", anthropic_request)
+    anthropic_response = await anthropic.complete(messages=messages, tools=[tool], config=config)
+    assert anthropic_response.tool_calls[0].name == "frontier_probe"
+
+    gemini = GeminiAdapter()
+
+    def gemini_request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["toolConfig"] == {
+            "functionCallingConfig": {
+                "mode": "ANY",
+                "allowedFunctionNames": ["frontier_probe"],
+            }
+        }
+        assert "temperature" not in payload["generationConfig"]
+        return {
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {
+                        "name": "frontier_probe",
+                        "args": {"value": "frontier-probe"},
+                    }
+                }]},
+                "finishReason": "STOP",
+            }]
+        }
+
+    monkeypatch.setattr(gemini, "_request", gemini_request)
+    gemini_response = await gemini.complete(messages=messages, tools=[tool], config=config)
+    assert gemini_response.tool_calls[0].name == "frontier_probe"
 
 
 @pytest.mark.asyncio
@@ -356,7 +818,7 @@ async def test_openai_adapter_response_conversion(monkeypatch: pytest.MonkeyPatc
         lambda payload, config: (
             {
                 "id": "req-1",
-                "choices": [{"message": {"content": "", "tool_calls": [{"id": "c1", "function": {"name": "release.status", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}],
+                "choices": [{"message": {"content": "", "reasoning": "private planning", "tool_calls": [{"id": "c1", "function": {"name": "release.status", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 2}, "completion_tokens_details": {"reasoning_tokens": 1}},
             },
             None,
@@ -364,14 +826,21 @@ async def test_openai_adapter_response_conversion(monkeypatch: pytest.MonkeyPatc
     )
     response = await adapter.complete(messages=[ModelMessage("user", "hello")], tools=public_tools(), config=ModelRequestConfig(model="test"))
     assert response.provider_request_id == "req-1"
+    assert response.reasoning == "private planning"
     assert response.tool_calls[0].name == "release.status"
     assert (response.input_tokens, response.output_tokens, response.cached_tokens, response.reasoning_tokens) == (10, 4, 2, 1)
 
 
 def test_prompt_is_versioned_and_does_not_name_privileged_details() -> None:
-    assert PROMPT_VERSION.startswith("frontier-incident-agent-v2")
+    assert PROMPT_VERSION == "frontier-incident-agent-v2.5"
     lowered = SYSTEM_PROMPT.lower()
     for forbidden in ("member a", "member b", "profile derivation", "strict verifier predicate", "gold repair"):
         assert forbidden not in lowered
     assert "twelve tools" in lowered
     assert "investigate" in lowered
+    assert "correct the next call" in lowered
+    assert "public incident ticket" in lowered
+    assert "attempt_budget in settings.toml matches" not in lowered
+    restore = next(tool for tool in public_tools() if tool.name == "recovery.restore")
+    assert restore.input_schema["properties"]["snapshot_id"]["default"] == "S0"
+    assert "not an integrity root digest" in restore.input_schema["properties"]["snapshot_id"]["description"]

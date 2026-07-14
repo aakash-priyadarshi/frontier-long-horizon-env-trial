@@ -23,7 +23,9 @@ def openai_tools(tools: list[ModelTool]) -> list[dict[str, Any]]:
     ]
 
 
-def openai_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+def openai_messages(
+    messages: list[ModelMessage], *, include_reasoning: bool = False
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for message in messages:
         row: dict[str, Any] = {"role": message.role, "content": message.content or None}
@@ -40,6 +42,32 @@ def openai_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
                 }
                 for call in message.tool_calls
             ]
+        if include_reasoning and message.reasoning:
+            row["reasoning"] = message.reasoning
+        result.append(row)
+    return result
+
+
+def ollama_messages(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+    """Convert messages to Ollama's native multi-turn tool format."""
+
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        row: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.reasoning:
+            row["thinking"] = message.reasoning
+        if message.tool_calls:
+            row["tool_calls"] = [
+                {
+                    "function": {
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    }
+                }
+                for call in message.tool_calls
+            ]
+        if message.role == "tool" and message.name:
+            row["tool_name"] = message.name
         result.append(row)
     return result
 

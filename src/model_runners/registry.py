@@ -15,6 +15,12 @@ from .anthropic import AnthropicAdapter
 from .configuration import RuntimeProviderSettings, custom_headers_for
 from .errors import ModelRunnerError, ProviderConfigurationError
 from .gemini import GeminiAdapter
+from .ollama_support import (
+    limitation_for_model,
+    profile_for_model,
+    public_support_catalog,
+    support_for_model,
+)
 from .openai_compatible import OpenAICompatibleAdapter
 from .protocol import ModelAdapter, ModelMessage, ModelRequestConfig, ModelTool
 from .scripted import SCRIPTED_MODELS, ScriptedAdapter
@@ -47,8 +53,8 @@ PROVIDERS = (
         "models": [],
         "capabilities": {
             "temperature": True, "reasoning_effort": False, "deterministic": True,
-            "custom_model": True, "custom_base_url": False, "connection_test": False,
-            "model_discovery": False, "tool_probe": True,
+            "custom_model": True, "custom_base_url": False, "connection_test": True,
+            "model_discovery": True, "tool_probe": True,
         },
     },
     {
@@ -57,8 +63,8 @@ PROVIDERS = (
         "models": [],
         "capabilities": {
             "temperature": True, "reasoning_effort": False, "deterministic": True,
-            "custom_model": True, "custom_base_url": False, "connection_test": False,
-            "model_discovery": False, "tool_probe": True,
+            "custom_model": True, "custom_base_url": False, "connection_test": True,
+            "model_discovery": True, "tool_probe": True,
         },
     },
     {
@@ -66,7 +72,7 @@ PROVIDERS = (
         "display_name": "Ollama (local)",
         "models": [],
         "capabilities": {
-            "temperature": True, "reasoning_effort": False, "deterministic": True,
+            "temperature": True, "reasoning_effort": True, "deterministic": True,
             "custom_model": True, "custom_base_url": True, "connection_test": True,
             "model_discovery": True, "tool_probe": True,
         },
@@ -143,7 +149,32 @@ class ProviderRegistry:
     def models(self, provider: str) -> list[dict[str, Any]]:
         definition = self._definition(provider)
         source = self._discovered_models.get(provider, list(definition["models"]))
-        return [{**model, "tool_compatibility": self._probe_for_model(provider, model)} for model in source]
+        models = [{**model, "tool_compatibility": self._probe_for_model(provider, model)} for model in source]
+        if provider != "ollama":
+            return models
+        enriched: list[dict[str, Any]] = []
+        for model in models:
+            support = support_for_model(str(model["id"]))
+            limitation = limitation_for_model(str(model["id"]))
+            enriched.append({
+                **model,
+                "tool_support": (
+                    {
+                        "profile_id": support["id"],
+                        "profile_name": support["name"],
+                        "support": support["support"],
+                        "notes": support["notes"],
+                    }
+                    if support is not None
+                    else None
+                ),
+                "tool_limitation": limitation,
+            })
+        return enriched
+
+    @staticmethod
+    def ollama_tool_support() -> dict[str, Any]:
+        return public_support_catalog()
 
     def status(self, provider: str) -> dict[str, Any]:
         definition = self._definition(provider)
@@ -225,8 +256,12 @@ class ProviderRegistry:
             self._tool_probes.pop(key, None)
 
     def _discovery_url(self, provider: str) -> str:
+        if provider == "anthropic":
+            return "https://api.anthropic.com/v1/models?limit=100"
+        if provider == "gemini":
+            return "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
         base_url = self.settings.base_url_for(provider)
-        if provider != "ollama":
+        if provider == "openai-compatible":
             return base_url + "/models"
         parsed = urlparse(base_url)
         path = parsed.path.rstrip("/")
@@ -239,7 +274,12 @@ class ProviderRegistry:
         url = self._discovery_url(provider)
         headers = {"Accept": "application/json"}
         secret = self.settings.secret_for(provider)
-        if secret:
+        if secret and provider == "anthropic":
+            headers["x-api-key"] = secret
+            headers["anthropic-version"] = "2023-06-01"
+        elif secret and provider == "gemini":
+            headers["x-goog-api-key"] = secret
+        elif secret:
             headers["Authorization"] = f"Bearer {secret}"
         headers.update(custom_headers_for(provider))
         request = urllib.request.Request(url, headers=headers, method="GET")
@@ -249,17 +289,31 @@ class ProviderRegistry:
         if len(raw) > 2_000_000:
             raise ModelRunnerError("provider model discovery response was too large", code="model_discovery_failed")
         body = json.loads(raw.decode("utf-8"))
-        items = body.get("models") if provider == "ollama" else body.get("data")
+        items = body.get("models") if provider in {"ollama", "gemini"} else body.get("data")
         if not isinstance(items, list):
             raise ModelRunnerError("provider returned malformed model discovery data", code="model_discovery_failed")
         models: list[dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
                 raise ModelRunnerError("provider returned malformed model discovery data", code="model_discovery_failed")
-            model_id = item.get("name") if provider == "ollama" else item.get("id")
+            if provider == "ollama":
+                model_id = item.get("name")
+            elif provider == "gemini":
+                methods = item.get("supportedGenerationMethods")
+                if isinstance(methods, list) and "generateContent" not in methods:
+                    continue
+                model_id = item.get("baseModelId")
+                if not model_id and isinstance(item.get("name"), str):
+                    model_id = item["name"].removeprefix("models/")
+            else:
+                model_id = item.get("id")
             if not isinstance(model_id, str) or not model_id:
                 raise ModelRunnerError("provider returned malformed model discovery data", code="model_discovery_failed")
-            model: dict[str, Any] = {"id": model_id, "display_name": model_id}
+            display_name = item.get("display_name") if provider == "anthropic" else item.get("displayName")
+            model: dict[str, Any] = {
+                "id": model_id,
+                "display_name": display_name if isinstance(display_name, str) and display_name else model_id,
+            }
             if provider == "ollama":
                 if isinstance(item.get("size"), int):
                     model["size"] = item["size"]
@@ -317,46 +371,126 @@ class ProviderRegistry:
             self._model_status[provider] = {"state": "discovered", "count": len(models), "tested_at": tested_at}
         return self.status(provider)
 
-    async def probe_tool_call(self, provider: str, model: str) -> dict[str, Any]:
+    async def probe_tool_call(
+        self,
+        provider: str,
+        model: str,
+        *,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         definition = self._definition(provider)
         if not definition["capabilities"]["tool_probe"]:
             raise ProviderConfigurationError("this provider does not support tool compatibility probes")
+        if options is not None and provider != "ollama":
+            raise ProviderConfigurationError("custom tool-probe options are available only for Ollama")
         tested_at = _utc_now()
         known_model = next((item for item in self.models(provider) if item["id"] == model), {"id": model})
         digest = known_model.get("digest")
         probe = ModelTool(
             name="frontier_probe",
-            description="Return the supplied harmless compatibility value.",
+            description="Call this harmless compatibility tool with the exact value requested by the user.",
             input_schema={
                 "type": "object",
-                "properties": {"value": {"type": "string", "const": "frontier-probe"}},
+                "properties": {
+                    "value": {
+                        "type": "string",
+                        "description": "The exact value frontier-probe.",
+                    }
+                },
                 "required": ["value"],
-                "additionalProperties": False,
             },
         )
-        try:
-            response = await self.create(provider).complete(
-                messages=[
-                    ModelMessage("system", "This is an isolated tool-format compatibility check. No environment tools are available."),
-                    ModelMessage("user", "Call frontier_probe exactly once with value frontier-probe. Do not answer in text."),
-                ],
-                tools=[probe],
-                config=ModelRequestConfig(
-                    model=model, temperature=0, max_output_tokens=128, timeout_seconds=30,
-                    max_retries=0, deterministic=True, custom_headers=custom_headers_for(provider),
-                ),
+        is_ollama = provider == "ollama"
+        profile = profile_for_model(model) if is_ollama else {}
+        if options is not None:
+            profile.update(options)
+        prompt_style = str(profile.get("prompt_style", "strict"))
+        system_prompt = "This is an isolated tool-format compatibility check. No environment tools are available."
+        user_prompt = "Call frontier_probe exactly once with value frontier-probe. Do not answer in text."
+        if prompt_style == "minimal":
+            system_prompt = "Use the supplied native tool when requested."
+        elif prompt_style == "schema_guided":
+            system_prompt = (
+                "This is an isolated native function-call format check. Exactly one harmless tool is supplied in "
+                "the request tools field. Emit a native tool call, never prose; no environment tools are available."
             )
+            user_prompt = (
+                "Invoke frontier_probe exactly once. Its only required string argument is value, and value must "
+                "equal frontier-probe. Return the call through the native tool-call channel, not as JSON text."
+            )
+        try:
+            messages = [
+                ModelMessage("system", system_prompt),
+                ModelMessage("user", user_prompt),
+            ]
+            adapter = self.create(provider)
+
+            async def complete(max_output_tokens: int, timeout_seconds: int) -> Any:
+                thinking = str(profile.get("thinking", "off")) if is_ollama else "default"
+                return await adapter.complete(
+                    messages=messages,
+                    tools=[probe],
+                    config=ModelRequestConfig(
+                        model=model,
+                        # Ollama thinking models (including Qwen3 and DeepSeek-R1) can
+                        # otherwise spend the entire probe budget reasoning before
+                        # emitting the requested tool call. Hosted providers do not
+                        # receive this Ollama-specific compatibility option.
+                        reasoning_effort=(
+                            None if not is_ollama or thinking == "default"
+                            else "none" if thinking == "off"
+                            else thinking
+                        ),
+                        temperature=float(profile.get("temperature", 0)) if is_ollama else None,
+                        max_output_tokens=max_output_tokens,
+                        context_window=int(profile["context_window"]) if is_ollama else None,
+                        timeout_seconds=timeout_seconds,
+                        max_retries=0,
+                        deterministic=is_ollama,
+                        required_tool=None if is_ollama else "frontier_probe",
+                        custom_headers=custom_headers_for(provider),
+                    ),
+                )
+
+            initial_tokens = int(profile.get("max_output_tokens", 512)) if is_ollama else 512
+            initial_timeout = int(profile.get("timeout_seconds", 120)) if is_ollama else 60
+            response = await complete(initial_tokens, initial_timeout)
             passed = (
                 len(response.tool_calls) == 1
                 and response.tool_calls[0].name == "frontier_probe"
                 and response.tool_calls[0].arguments == {"value": "frontier-probe"}
             )
+            retry_tokens = profile.get("retry_output_tokens") if is_ollama else None
+            if (
+                is_ollama
+                and retry_tokens is not None
+                and int(retry_tokens) > initial_tokens
+                and not passed
+                and response.finish_reason in {"length", "max_tokens", "MAX_TOKENS"}
+            ):
+                response = await complete(int(retry_tokens), min(300, max(initial_timeout, 180)))
+                passed = (
+                    len(response.tool_calls) == 1
+                    and response.tool_calls[0].name == "frontier_probe"
+                    and response.tool_calls[0].arguments == {"value": "frontier-probe"}
+                )
             record = {
                 "state": "passed" if passed else "failed",
                 "tested_at": tested_at,
                 "model": model,
                 "model_digest": digest,
-                "error_code": None if passed else "invalid_tool_call",
+                "profile": dict(profile) if is_ollama else None,
+                "observed": {
+                    "finish_reason": response.finish_reason,
+                    "tool_call_count": len(response.tool_calls),
+                    "returned_text": bool(response.text),
+                    "returned_reasoning": bool(response.reasoning),
+                },
+                "error_code": None if passed else (
+                    "probe_output_truncated"
+                    if response.finish_reason in {"length", "max_tokens", "MAX_TOKENS"}
+                    else "invalid_tool_call"
+                ),
             }
             self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at}
             self._authentication[provider] = {
@@ -366,17 +500,19 @@ class ProviderRegistry:
         except ModelRunnerError as exc:
             record = {
                 "state": "failed", "tested_at": tested_at, "model": model,
-                "model_digest": digest, "error_code": exc.code,
+                "model_digest": digest, "profile": dict(profile) if is_ollama else None,
+                "observed": None, "error_code": exc.code,
             }
             if exc.code == "provider_authentication_failed":
                 self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at}
                 self._authentication[provider] = {"state": "invalid", "tested_at": tested_at}
-            elif exc.code in {"provider_unreachable", "provider_timeout"}:
+            elif exc.code == "provider_unreachable":
                 self._endpoint[provider] = {"state": "unreachable", "tested_at": tested_at}
         except Exception:
             record = {
                 "state": "failed", "tested_at": tested_at, "model": model,
-                "model_digest": digest, "error_code": "provider_error",
+                "model_digest": digest, "profile": dict(profile) if is_ollama else None,
+                "observed": None, "error_code": "provider_error",
             }
         self._tool_probes[(provider, model)] = record
         return dict(record)

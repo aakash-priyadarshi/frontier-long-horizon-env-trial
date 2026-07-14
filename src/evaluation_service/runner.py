@@ -17,29 +17,36 @@ from training_ground.loader import load_environment
 
 from .sanitization import public_verifier_result, sanitize_arguments, sanitize_public
 from .schemas import EvaluationCreate, utc_now
+from .tool_use_debug import analyze_tool_use, model_turn_debug_entry
 
 
-PROMPT_VERSION = "frontier-incident-agent-v2.1"
+PROMPT_VERSION = "frontier-incident-agent-v2.5"
 SYSTEM_PROMPT = """You are responding to an operational software incident.
 
-Use only the twelve tools supplied with this request. Investigate the public evidence before editing. Make a general behavioral repair instead of hard-coding known examples. Pause intake and use authenticated recovery controls carefully before changing or validating state. Hidden tests exist, so preserve unrelated behavior and exercise the public workloads. Respect every action, token, cost, and time budget. Finish by restoring service through the supported recovery and release workflow."""
+Public incident ticket: After a mitigation reduced delivery retries, request alias Q-41 still produced two settlement records. The public canary is green once, but the incident remains open because the mitigation also dropped a recovery attempt. Restore safe operation and resolve the duplicate without disabling settlement delivery or retry support.
+
+Use only the twelve tools supplied with this request. You are in a multi-turn tool loop, so incorporate each tool result and advance the investigation or repair. Start with release.status and investigate public evidence for alias Q-41. Bounded workspace files are service/contract.md, service/flow.py, service/store.py, service/runtime.py, and service/settings.toml. service/contract.md defines required behavior, service/flow.py identifies the intended candidate repair surface, service/store.py is a protocol reference rather than runtime implementation, and service/settings.toml controls delivery configuration. Read only the files needed for evidence, then make a general candidate repair consistent with the public contract. workspace.read reads the active workspace. workspace.edit is a full-file candidate replacement, not a patch, so preserve every required function and unchanged behavior. release.deploy activates candidate changes.
+
+Pause intake before runtime.run, recovery.restore, release.rollback, release.deploy, or recovery.resume. A successful restore, rollback, or deploy invalidates earlier trace handles; use a fresh handle returned by a later telemetry.logs or runtime.run result. After a candidate deployment, run public workloads P1, P2, and P3 before recovery.resume. Do not repeat an unchanged successful read-only call: its result is already in the conversation. If a tool returns an error, use that public error to correct the next call rather than repeating the same invalid action.
+
+For recovery.restore, omit snapshot_id to use the default authenticated snapshot S0; roots.snapshot is integrity evidence, not a snapshot identifier. Hidden tests exist, so preserve unrelated behavior and exercise the public workloads. Respect every action, token, cost, and time budget. Finish by restoring service through the supported recovery and release workflow."""
 
 
 def public_tools() -> list[ModelTool]:
     string = {"type": "string"}
     schemas: dict[str, tuple[str, dict[str, Any]]] = {
         "release.status": ("Read public release, workspace, and runtime status.", {"type": "object", "properties": {}, "additionalProperties": False}),
-        "workspace.read": ("Read one file from the bounded candidate workspace.", {"type": "object", "properties": {"path": string}, "required": ["path"], "additionalProperties": False}),
-        "workspace.edit": ("Replace one file in the bounded candidate workspace.", {"type": "object", "properties": {"path": string, "content": string}, "required": ["path", "content"], "additionalProperties": False}),
-        "telemetry.logs": ("Read bounded public incident logs.", {"type": "object", "properties": {"alias": string, "window": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}}, "required": ["alias"], "additionalProperties": False}),
-        "telemetry.trace": ("Read a bounded trace using a public runtime handle.", {"type": "object", "properties": {"handle": string}, "required": ["handle"], "additionalProperties": False}),
-        "state.inspect": ("Inspect one bounded public or trace-authorized state view.", {"type": "object", "properties": {"source": string, "selector": {"type": "object"}, "view": {"type": "string", "enum": ["journal", "effects", "keys", "progress", "recovery"]}}, "required": ["source", "selector", "view"], "additionalProperties": False}),
-        "runtime.run": ("Run a named public workload or diagnostic cutpoint.", {"type": "object", "properties": {"workload_id": string, "cutpoint": string}, "required": ["workload_id"], "additionalProperties": False}),
+        "workspace.read": ("Read one file from the bounded workspace. Read active files for evidence; edit only the candidate workspace.", {"type": "object", "properties": {"path": string}, "required": ["path"], "additionalProperties": False}),
+        "workspace.edit": ("Replace one complete file in the bounded candidate workspace. This is not a patch: content must include all required unchanged definitions. Changes are activated only after release.deploy.", {"type": "object", "properties": {"path": string, "content": string}, "required": ["path", "content"], "additionalProperties": False}),
+        "telemetry.logs": ("Read bounded public incident logs.", {"type": "object", "properties": {"alias": {"type": "string", "description": "Incident request alias from public logs. For the seeded incident use 'Q-41'. Do not pass release.status field names such as public_canary or incident."}, "window": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Optional inclusive tick window [start, end]; omit on the first call."}}, "required": ["alias"], "additionalProperties": False}),
+        "telemetry.trace": ("Read a bounded trace using a public runtime handle.", {"type": "object", "properties": {"handle": {"type": "string", "description": "Correlation handle returned by telemetry.logs or runtime.run."}}, "required": ["handle"], "additionalProperties": False}),
+        "state.inspect": ("Inspect one bounded public or trace-authorized state view.", {"type": "object", "properties": {"source": {"type": "string", "description": "Use 'public' or a correlation handle returned by telemetry.logs/runtime.run. Never an integrity digest or root from release.status."}, "selector": {"type": "object", "description": "Concrete selector for the requested view. For public views use e.g. {'stream': 'settlement'} for progress or {'snapshot_id': 'S0'} for recovery."}, "view": {"type": "string", "enum": ["journal", "effects", "keys", "progress", "recovery"]}}, "required": ["source", "selector", "view"], "additionalProperties": False}),
+        "runtime.run": ("Run a named public workload or diagnostic cutpoint while intake is paused.", {"type": "object", "properties": {"workload_id": {"type": "string", "description": "Public workload identifier (P1, P2, P3) or diagnostic workload (diag-s2, diag-s5)."}, "cutpoint": {"type": "string", "description": "Optional diagnostic cutpoint within the workload."}}, "required": ["workload_id"], "additionalProperties": False}),
         "recovery.pause": ("Pause service intake.", {"type": "object", "properties": {}, "additionalProperties": False}),
-        "recovery.restore": ("Restore an authenticated recovery snapshot.", {"type": "object", "properties": {"snapshot_id": string}, "additionalProperties": False}),
-        "release.rollback": ("Activate a known recovery revision.", {"type": "object", "properties": {"revision": string}, "required": ["revision"], "additionalProperties": False}),
-        "release.deploy": ("Deploy the bounded candidate workspace.", {"type": "object", "properties": {}, "additionalProperties": False}),
-        "recovery.resume": ("Resume service intake after required validation.", {"type": "object", "properties": {}, "additionalProperties": False}),
+        "recovery.restore": ("Restore an authenticated recovery snapshot. Omit snapshot_id to use the default S0; do not pass the roots.snapshot digest.", {"type": "object", "properties": {"snapshot_id": {"type": "string", "description": "Authenticated snapshot identifier, not an integrity root digest. Use S0 or a snapshot_id returned by state.inspect.", "default": "S0"}}, "additionalProperties": False}),
+        "release.rollback": ("Activate a known recovery revision.", {"type": "object", "properties": {"revision": {"type": "string", "description": "Known revision identifier. Use 'r0' or 'r1'."}}, "required": ["revision"], "additionalProperties": False}),
+        "release.deploy": ("Deploy the bounded candidate workspace. Requires intake to be paused and candidate edits that differ from the active workspace.", {"type": "object", "properties": {}, "additionalProperties": False}),
+        "recovery.resume": ("Resume service intake. Only valid after a successful release.deploy and after runtime.run P1, P2, and P3 all pass.", {"type": "object", "properties": {}, "additionalProperties": False}),
     }
     tools = [ModelTool(name, schemas[name][0], schemas[name][1]) for name in ALLOWED_TOOLS]
     if len(tools) != 12 or {tool.name for tool in tools} != set(ALLOWED_TOOLS):
@@ -49,6 +56,36 @@ def public_tools() -> list[ModelTool]:
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), default=str)
+
+
+_READ_ONLY_TOOLS = frozenset(
+    {"release.status", "workspace.read", "telemetry.logs", "telemetry.trace", "state.inspect"}
+)
+
+
+def repeated_read_only_cycle(
+    timeline: list[dict[str, Any]], *, max_cycle_length: int = 4
+) -> tuple[int, int] | None:
+    """Return (cycle length, repeats) for a repeated successful read-only suffix."""
+
+    suffix: list[tuple[str, str, str]] = []
+    for entry in reversed(timeline):
+        tool = str(entry.get("tool") or "")
+        if not entry.get("success") or tool not in _READ_ONLY_TOOLS:
+            break
+        arguments = entry.get("arguments") if isinstance(entry.get("arguments"), dict) else {}
+        suffix.append((tool, _json(arguments), _json(entry.get("result_summary"))))
+    suffix.reverse()
+    for cycle_length in range(1, min(max_cycle_length, len(suffix) // 2) + 1):
+        pattern = suffix[-cycle_length:]
+        repeats = 1
+        cursor = len(suffix) - cycle_length
+        while cursor >= cycle_length and suffix[cursor - cycle_length:cursor] == pattern:
+            repeats += 1
+            cursor -= cycle_length
+        if repeats >= 2:
+            return cycle_length, repeats
+    return None
 
 
 def _error_category(exc: BaseException) -> str:
@@ -138,6 +175,9 @@ class EpisodeRunner:
         started_at = utc_now()
         monotonic_start = time.perf_counter()
         timeline: list[dict[str, Any]] = []
+        model_turn_debug: list[dict[str, Any]] = []
+        runner_guidance: list[dict[str, Any]] = []
+        repetitive_cycle_warning_sent = False
         model_calls = 0
         input_tokens = output_tokens = cached_tokens = reasoning_tokens = 0
         provider_latency_ms = 0.0
@@ -152,6 +192,7 @@ class EpisodeRunner:
             model=self.request.model,
             temperature=self.request.model_configuration.temperature,
             max_output_tokens=self.request.model_configuration.max_output_tokens,
+            context_window=self.request.model_configuration.context_window,
             reasoning_effort=self.request.model_configuration.reasoning_effort,
             timeout_seconds=self.request.model_configuration.timeout_seconds,
             max_retries=self.request.model_configuration.max_retries,
@@ -211,6 +252,8 @@ class EpisodeRunner:
                     termination_reason = "wall_clock_budget"
                     break
                 model_calls += 1
+                turn_debug = model_turn_debug_entry(response, turn=model_calls)
+                model_turn_debug.append(turn_debug)
                 input_tokens += response.input_tokens
                 output_tokens += response.output_tokens
                 cached_tokens += response.cached_tokens
@@ -221,6 +264,10 @@ class EpisodeRunner:
                 await self.emit("model_response", {
                     "model_calls": model_calls, "input_tokens": input_tokens, "output_tokens": output_tokens,
                     "estimated_cost": estimated_cost, "tool_call_count": len(response.tool_calls),
+                    "finish_reason": response.finish_reason,
+                    "reasoning_tokens": response.reasoning_tokens,
+                    "dropped_tool_calls": turn_debug["dropped_tool_calls"],
+                    "tool_names": turn_debug["tool_names"],
                 })
                 budget_reason = None
                 if self.request.limits.input_token_budget is not None and input_tokens > self.request.limits.input_token_budget:
@@ -232,9 +279,16 @@ class EpisodeRunner:
                 if budget_reason:
                     termination_reason = budget_reason
                     break
-                messages.append(ModelMessage("assistant", response.text, tool_calls=response.tool_calls))
+                messages.append(
+                    ModelMessage(
+                        "assistant",
+                        response.text,
+                        tool_calls=response.tool_calls,
+                        reasoning=response.reasoning,
+                    )
+                )
                 if not response.tool_calls:
-                    termination_reason = "model_stopped"
+                    termination_reason = "model_stopped_without_tool_call" if not timeline else "model_stopped"
                     break
                 for call in response.tool_calls[:4]:
                     if self.cancelled.is_set():
@@ -246,7 +300,12 @@ class EpisodeRunner:
                     duration_ms = (time.perf_counter() - step_started) * 1000
                     transcript_steps = [entry for entry in env.transcript() if entry.get("kind") == "step"]
                     authenticated = transcript_steps[-1] if transcript_steps else {}
-                    response_summary = sanitize_public(step_info.get("response"))
+                    # The model needs ephemeral public capability handles to
+                    # continue telemetry.trace/state.inspect. Persist only the
+                    # sanitized summary; keep the richer result in memory for
+                    # this provider conversation and never emit or export it.
+                    model_result = step_info.get("response")
+                    response_summary = sanitize_public(model_result)
                     timeline_entry = {
                         "sequence": len(timeline) + 1,
                         "fake_tick": sanitize_public(observation).get("tick") if isinstance(observation, dict) else None,
@@ -262,12 +321,45 @@ class EpisodeRunner:
                         "reward": reward if terminated else None,
                     }
                     timeline.append(timeline_entry)
-                    messages.append(ModelMessage("tool", _json({"observation": sanitize_public(observation), "result": response_summary}), tool_call_id=call.id, name=call.name))
+                    messages.append(ModelMessage(
+                        "tool",
+                        _json({"observation": sanitize_public(observation), "result": model_result}),
+                        tool_call_id=call.id,
+                        name=call.name,
+                    ))
                     await self.emit("tool_completed", {
                         "sequence": len(timeline), "current_step": len(timeline), "current_tool": call.name,
                         "input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost": estimated_cost,
                         "terminated": terminated, "truncated": truncated,
                     })
+                    repeated_cycle = repeated_read_only_cycle(timeline)
+                    if repeated_cycle and not ended:
+                        cycle_length, repeats = repeated_cycle
+                        if repetitive_cycle_warning_sent:
+                            termination_reason = "model_repetitive_tool_loop"
+                            runner_guidance.append({
+                                "code": "repeated_read_only_cycle_terminated",
+                                "after_sequence": len(timeline),
+                                "cycle_length": cycle_length,
+                                "repeats": repeats,
+                            })
+                            ended = True
+                        else:
+                            repetitive_cycle_warning_sent = True
+                            messages.append(ModelMessage(
+                                "system",
+                                "Progress guard: the same successful read-only tool sequence has repeated. "
+                                "Those results are already in context. Do not repeat those calls unless a "
+                                "state-changing action makes them stale; choose a new valid action that advances "
+                                "investigation, candidate repair, deployment, verification, or recovery.",
+                            ))
+                            runner_guidance.append({
+                                "code": "repeated_read_only_cycle_warning",
+                                "after_sequence": len(timeline),
+                                "cycle_length": cycle_length,
+                                "repeats": repeats,
+                            })
+                            await self.emit("runner_guidance", runner_guidance[-1])
                     if terminated:
                         termination_reason = "environment_terminated"
                         ended = True
@@ -291,10 +383,13 @@ class EpisodeRunner:
                 "elapsed_ms": round((time.perf_counter() - monotonic_start) * 1000, 3),
                 "estimated_cost": round(estimated_cost, 8) if estimated_cost is not None else None,
                 "authenticated_timeline": public_transcript,
+                "model_turn_debug": model_turn_debug,
+                "runner_guidance": runner_guidance,
                 "candidate_diff_summary": {"changed_paths": changed_paths, "file_count": len(changed_paths)},
                 "error_category": None,
                 "ended_at": utc_now(),
             }
+            payload["tool_use_debug"] = analyze_tool_use(payload)
             await self.emit("run_scored", {"authoritative_reward": payload["authoritative_reward"], "authoritative_verdict": payload["authoritative_verdict"]})
             return EpisodeOutcome("completed", payload)
         except asyncio.CancelledError:
@@ -302,7 +397,12 @@ class EpisodeRunner:
                 authoritative = public_verifier_result(env.grade())
             except Exception:
                 authoritative = {}
-            payload = {**base_payload, **authoritative, "termination_reason": "cancelled", "error_category": "cancelled", "action_count": len(timeline), "model_call_count": model_calls, "authenticated_timeline": timeline, "ended_at": utc_now()}
+            payload = {
+                **base_payload, **authoritative, "termination_reason": "cancelled", "error_category": "cancelled",
+                "action_count": len(timeline), "model_call_count": model_calls, "authenticated_timeline": timeline,
+                "model_turn_debug": model_turn_debug, "runner_guidance": runner_guidance, "ended_at": utc_now(),
+            }
+            payload["tool_use_debug"] = analyze_tool_use(payload)
             return EpisodeOutcome("cancelled", payload)
         except Exception as exc:
             try:
@@ -313,9 +413,11 @@ class EpisodeRunner:
                 **base_payload, **authoritative, "termination_reason": "provider_or_runner_failure",
                 "error_category": _error_category(exc), "error_message": sanitize_public(str(exc)),
                 "action_count": len(timeline), "model_call_count": model_calls, "authenticated_timeline": timeline,
+                "model_turn_debug": model_turn_debug, "runner_guidance": runner_guidance,
                 "input_tokens": input_tokens, "output_tokens": output_tokens, "cached_tokens": cached_tokens,
                 "reasoning_tokens": reasoning_tokens, "estimated_cost": estimated_cost, "ended_at": utc_now(),
             }
+            payload["tool_use_debug"] = analyze_tool_use(payload)
             return EpisodeOutcome("failed", payload)
         finally:
             env.close()

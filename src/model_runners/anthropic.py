@@ -10,7 +10,7 @@ import urllib.request
 from typing import Any
 
 from .configuration import RuntimeProviderSettings, secret_for
-from .errors import ModelRunnerError, ProviderConfigurationError
+from .errors import ModelRunnerError, ProviderConfigurationError, ProviderTimeout
 from .protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from .tool_conversion import anthropic_tools
 from .usage import estimate_cost
@@ -45,7 +45,11 @@ class AnthropicAdapter:
                 code="provider_authentication_failed" if exc.code in {401, 403} else "provider_http_error",
                 retryable=exc.code in {408, 409, 429} or exc.code >= 500,
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except TimeoutError as exc:
+            raise ProviderTimeout() from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProviderTimeout() from exc
             raise ModelRunnerError("provider request failed", code="provider_unreachable", retryable=True) from exc
 
     async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
@@ -65,6 +69,8 @@ class AnthropicAdapter:
             else:
                 converted.append({"role": message.role, "content": message.content})
         payload = {"model": config.model, "system": system, "messages": converted, "tools": anthropic_tools(tools), "max_tokens": config.max_output_tokens}
+        if config.required_tool:
+            payload["tool_choice"] = {"type": "tool", "name": config.required_tool}
         if config.temperature is not None:
             payload["temperature"] = 0 if config.deterministic else config.temperature
         started = time.perf_counter()

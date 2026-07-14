@@ -8,6 +8,7 @@ import type { Run } from "@/lib/types";
 import { duration, money, number } from "@/lib/format";
 import { ActionTimeline } from "@/components/action-timeline";
 import { EpisodeRewardProgression } from "@/components/charts";
+import { ToolUseDebugPanel } from "@/components/tool-use-debug";
 import { AuthorityNotice, CommitBadge, CopyButton, DataTable, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, ProviderBadge, RunStatusBadge } from "@/components/ui";
 
 export default function RunPage() {
@@ -39,6 +40,7 @@ export default function RunPage() {
     </section>
     <section className="surface-section"><div className="section-head"><div><span className="eyebrow">Public checks</span><h2>Workload outcomes</h2></div></div>{run.public_workload_outcomes && Object.keys(run.public_workload_outcomes).length ? <DataTable caption="Public workload outcomes" headers={["Workload", "Outcome"]} rows={Object.entries(run.public_workload_outcomes).map(([name, value]) => [<code key="name">{name}</code>, value.outcome ?? "unknown"])} /> : <EmptyState title="No public workload outcomes" detail="The episode ended before public workload results were available." />}</section>
     <EpisodeRewardProgression rewards={rewards} />
+    <section className="surface-section"><div className="section-head"><div><span className="eyebrow">Debug</span><h2>Tool-use root cause</h2></div><span className="muted">Read-only analysis of protocol health and recovery workflow preconditions</span></div><ToolUseDebugPanel debug={run.tool_use_debug} modelTurns={run.model_turn_debug} /></section>
     <section className="surface-section"><div className="section-head"><div><span className="eyebrow">Authenticated record</span><h2>Action timeline</h2></div><span className="muted">Sanitized environment tools only · capability material removed</span></div><ActionTimeline entries={run.authenticated_timeline ?? []} live={!terminal} /></section>
   </>;
 }

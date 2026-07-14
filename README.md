@@ -65,6 +65,7 @@ tests/milestone_2/            Focused Milestone 2 interaction-layer verification
 scripts/                      Reproducible verification entrypoints
 docs/                         Implemented Milestone 1 boundary documentation
 evidence/                     Machine-readable verification receipts
+CHANGELOG.md                  Detailed V2 dashboard and provider release notes
 ```
 
 ## Setup

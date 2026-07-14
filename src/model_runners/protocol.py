@@ -13,6 +13,9 @@ class ModelMessage:
     tool_call_id: str | None = None
     name: str | None = None
     tool_calls: tuple["ModelToolCall", ...] = ()
+    # Provider-private reasoning state used only to continue a local Ollama
+    # tool loop. It is never persisted in evaluation records or exports.
+    reasoning: str = ""
 
 
 @dataclass(frozen=True)
@@ -34,10 +37,12 @@ class ModelRequestConfig:
     model: str
     temperature: float | None = None
     max_output_tokens: int = 4096
+    context_window: int | None = None
     reasoning_effort: str | None = None
     timeout_seconds: float = 60.0
     max_retries: int = 2
     deterministic: bool = False
+    required_tool: str | None = None
     custom_headers: dict[str, str] = field(default_factory=dict)
     input_token_price_per_million: float | None = None
     output_token_price_per_million: float | None = None
@@ -46,6 +51,9 @@ class ModelRequestConfig:
 @dataclass(frozen=True)
 class ModelResponse:
     text: str = ""
+    # Provider-private reasoning state. The runner may replay it to the same
+    # provider, but public diagnostics expose only aggregate token/length data.
+    reasoning: str = ""
     tool_calls: tuple[ModelToolCall, ...] = ()
     provider_request_id: str | None = None
     input_tokens: int = 0

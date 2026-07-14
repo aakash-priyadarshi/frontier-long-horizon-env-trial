@@ -17,6 +17,7 @@ from ..persistence import EvaluationStore, canonical_json
 from ..sanitization import contains_forbidden_public_data
 from ..schemas import EvaluationCreate, ProviderSessionConfiguration, ProviderToolProbeRequest
 from ..settings import Settings, dashboard_origins
+from ..tool_use_debug import analyze_tool_use
 
 
 TERMINAL_BATCH = {"completed", "completed_with_errors", "cancelled", "interrupted"}
@@ -85,6 +86,10 @@ def build_router(
     async def providers() -> dict[str, Any]:
         return {"items": registry.list()}
 
+    @router.get("/providers/ollama/tool-support")
+    async def ollama_tool_support() -> JSONResponse:
+        return no_store(registry.ollama_tool_support())
+
     @router.get("/providers/{provider}/models")
     async def provider_models(provider: str) -> dict[str, Any]:
         try:
@@ -143,7 +148,11 @@ def build_router(
     ) -> JSONResponse:
         validate_provider_control_request(request)
         try:
-            result = await registry.probe_tool_call(provider, payload.model)
+            result = await registry.probe_tool_call(
+                provider,
+                payload.model,
+                options=payload.options.model_dump() if payload.options is not None else None,
+            )
             status = registry.status(provider)
         except KeyError:
             raise _not_found("provider")
@@ -212,6 +221,17 @@ def build_router(
             return int(header_value)
         return query_value
 
+    def run_summary(value: dict[str, Any]) -> dict[str, Any]:
+        fields = (
+            "run_id", "batch_id", "status", "provider", "model", "split", "seed", "attempt",
+            "instance_id", "current_step", "current_tool", "authoritative_reward",
+            "authoritative_verdict", "action_count", "model_call_count", "input_tokens",
+            "output_tokens", "reasoning_tokens", "cached_tokens", "estimated_cost", "elapsed_ms",
+            "provider_latency_ms", "termination_reason", "error_category", "created_at", "updated_at",
+            "started_at", "ended_at",
+        )
+        return {field: value.get(field) for field in fields}
+
     @router.get("/evaluations/{batch_id}/events")
     async def batch_events(
         request: Request, batch_id: str,
@@ -222,12 +242,26 @@ def build_router(
             raise _not_found("batch")
         return StreamingResponse(event_stream("batch", batch_id, replay_id(last_event_id, after), request), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @router.get("/runs")
+    async def runs(
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, Any]:
+        items, total = store.list_runs(limit=limit, offset=offset)
+        return {
+            "items": [run_summary(item) for item in items],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     @router.get("/runs/{run_id}")
     async def run(run_id: str) -> dict[str, Any]:
         result = store.get_run(run_id)
         if result is None:
             raise _not_found("run")
-        return result
+        # Computed on read so historical episodes gain the debug panel without re-running.
+        return {**result, "tool_use_debug": analyze_tool_use(result)}
 
     @router.get("/runs/{run_id}/events")
     async def run_events(

@@ -39,6 +39,23 @@ export type ToolCompatibility = {
   model_digest?: string | null;
   error_code?: string | null;
   invalidated?: boolean;
+  profile?: ToolProbeOptions | null;
+  observed?: {
+    finish_reason?: string | null;
+    tool_call_count: number;
+    returned_text: boolean;
+    returned_reasoning: boolean;
+  } | null;
+};
+
+export type ToolProbeOptions = {
+  context_window: number;
+  max_output_tokens: number;
+  retry_output_tokens: number | null;
+  timeout_seconds: number;
+  temperature: number;
+  thinking: "default" | "off" | "low" | "medium" | "high";
+  prompt_style: "strict" | "minimal" | "schema_guided";
 };
 
 export type ProviderModel = {
@@ -48,6 +65,47 @@ export type ProviderModel = {
   digest?: string;
   details?: { family?: string; parameter_size?: string; quantization_level?: string };
   tool_compatibility?: ToolCompatibility;
+  tool_support?: {
+    profile_id: string;
+    profile_name: string;
+    support: "locally_verified" | "profile_available" | string;
+    notes: string;
+  } | null;
+  tool_limitation?: {
+    name: string;
+    code: string;
+    detail: string;
+    recommendation: string;
+  } | null;
+};
+
+export type OllamaToolSupportItem = {
+  id: string;
+  name: string;
+  patterns: string[];
+  examples: string[];
+  support: "locally_verified" | "profile_available" | string;
+  hardware: string;
+  notes: string;
+  profile: ToolProbeOptions;
+};
+
+export type OllamaToolSupportCatalog = {
+  items: OllamaToolSupportItem[];
+  known_limitations: Array<{
+    patterns: string[];
+    name: string;
+    code: string;
+    detail: string;
+    recommendation: string;
+  }>;
+  custom_probe: {
+    isolated_tool: string;
+    executes_tool: boolean;
+    stores_model_output: boolean;
+    fields: Array<Record<string, unknown>>;
+  };
+  meaning: string;
 };
 
 export type Run = {
@@ -82,7 +140,13 @@ export type Run = {
   public_workload_outcomes?: Record<string, { outcome?: string }>;
   candidate_diff_summary?: { changed_paths: string[]; file_count: number };
   authenticated_timeline?: TimelineEntry[];
+  model_turn_debug?: ModelTurnDebug[];
+  tool_use_debug?: ToolUseDebug | null;
   error_category?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string;
+  ended_at?: string;
   limits?: {
     max_steps?: number;
     max_model_calls?: number;
@@ -107,6 +171,55 @@ export type TimelineEntry = {
   terminated: boolean;
   truncated: boolean;
   reward?: number | null;
+};
+
+export type ToolUseFinding = {
+  severity: "error" | "warning";
+  code: string;
+  title: string;
+  detail: string;
+  remediation: string;
+  sequence?: number | null;
+  tool?: string | null;
+};
+
+export type ToolUseDebug = {
+  summary: string;
+  primary_cause: ToolUseFinding | null;
+  findings: ToolUseFinding[];
+  coverage: Record<string, number>;
+  workflow_phases: Array<{
+    id: string;
+    title: string;
+    status: "present" | "attempted" | "missing" | string;
+    detail: string;
+    tools_seen: string[];
+  }>;
+  protocol_health: {
+    tool_calls_executed: number;
+    tool_failures: number;
+    model_calls: number;
+    reasoning_tokens: number;
+    protocol_issues: Array<{ code: string; title: string; detail: string }>;
+    tool_calling_appears_functional: boolean;
+  };
+  expected_shortest_path: string[];
+};
+
+export type ModelTurnDebug = {
+  turn: number;
+  finish_reason?: string | null;
+  tool_call_count: number;
+  tool_names: string[];
+  dropped_tool_calls: number;
+  has_text: boolean;
+  text_chars: number;
+  has_reasoning: boolean;
+  reasoning_chars: number;
+  input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+  latency_ms: number;
 };
 
 export type Batch = {

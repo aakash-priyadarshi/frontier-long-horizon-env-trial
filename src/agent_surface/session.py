@@ -482,7 +482,7 @@ class AgentSession:
         )
         try:
             receipt = engine.run(workload_id, cutpoint, run_id=run_id)
-        except (ValueError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise ToolError("active workspace configuration invalid") from exc
         self._store.connection.commit()
         self._workload_history.append(receipt)

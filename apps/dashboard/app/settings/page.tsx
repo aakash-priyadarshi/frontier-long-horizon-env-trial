@@ -4,11 +4,12 @@ import { CheckCircle2, Cpu, Database, KeyRound, RadioTower, Server, ShieldCheck,
 import { motion } from "motion/react";
 import { FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { Provider, ProviderModel } from "@/lib/types";
+import type { Provider, ProviderModel, ToolCompatibility, ToolProbeOptions } from "@/lib/types";
 import { AnimatedStatus, MotionButton, SharedSelectionIndicator } from "@/components/motion";
+import { OllamaToolCompatibility } from "@/components/ollama-tool-compatibility";
 import { ErrorState, InlineLoading, LoadingState, PageHeader, ProviderBadge } from "@/components/ui";
 
-type ProviderResult = { provider: Provider };
+type ProviderResult = { provider: Provider; tool_compatibility?: ToolCompatibility };
 
 const credentialLabels: Record<string, string> = {
   not_required: "Not required",
@@ -54,6 +55,16 @@ function formatBytes(value?: number): string {
 
 function modelDetail(model: ProviderModel): string {
   return [model.details?.parameter_size, model.details?.quantization_level, formatBytes(model.size)].filter(Boolean).join(" · ");
+}
+
+function probeMessage(model: string, result?: ToolCompatibility): string {
+  if (result?.state === "passed") return `${model} emitted the required native tool call for its current digest.`;
+  if (result?.error_code === "provider_out_of_memory") return `${model} could not fit in available memory with this profile. Lower the context window in the custom test.`;
+  if (result?.error_code === "provider_context_limit") return `${model} rejected this context window. Lower it in the custom test.`;
+  if (result?.error_code === "probe_output_truncated") return `${model} exhausted both safe output budgets before emitting a tool call.`;
+  if (result?.error_code === "invalid_tool_call" && result.observed?.returned_text) return `${model} answered in text instead of the native tool channel. Try a bounded custom profile or use a supported tag.`;
+  if (result?.error_code === "invalid_tool_call") return `${model} did not emit the exact structured tool call.`;
+  return `Tool compatibility test completed for ${model}.`;
 }
 
 export default function SettingsPage() {
@@ -148,15 +159,15 @@ export default function SettingsPage() {
     }
   }
 
-  async function probeToolCalling(provider: Provider, model: string) {
+  async function probeToolCalling(provider: Provider, model: string, options?: ToolProbeOptions) {
     if (!model) return;
     setBusy(current => ({ ...current, [provider.provider]: `probe:${model}` }));
     try {
       const result = await api<ProviderResult>(`/api/providers/${provider.provider}/tool-probe`, {
-        method: "POST", body: JSON.stringify({ model }),
+        method: "POST", body: JSON.stringify(options ? { model, options } : { model }),
       });
       replaceProvider(result.provider);
-      setMessages(current => ({ ...current, [provider.provider]: `Tool compatibility test completed for ${model}.` }));
+      setMessages(current => ({ ...current, [provider.provider]: probeMessage(model, result.tool_compatibility) }));
     } catch (reason) {
       setMessages(current => ({ ...current, [provider.provider]: reason instanceof Error ? reason.message : "Tool compatibility test failed." }));
     } finally {
@@ -210,10 +221,12 @@ export default function SettingsPage() {
 
         {provider.models.length > 0 && provider.provider !== "scripted" && <section className="discovered-models" aria-label={`${provider.display_name} models`}>
           <h3>Available models</h3>
-          <ul>{provider.models.map(model => <li key={model.id}><div><strong>{model.display_name}</strong>{modelDetail(model) && <small>{modelDetail(model)}</small>}<span className={stateTone(model.tool_compatibility?.state ?? "not_tested")}>Tool compatibility: {stateLabels[model.tool_compatibility?.state ?? "not_tested"]}</span></div>{provider.capabilities.tool_probe && <MotionButton className="button secondary" disabled={working} onClick={() => probeToolCalling(provider, model.id)}>{busy[provider.provider] === `probe:${model.id}` ? <InlineLoading label="Testing tools" /> : "Test tools"}</MotionButton>}</li>)}</ul>
+          <ul>{provider.models.map(model => <li key={model.id}><div><strong>{model.display_name}</strong>{modelDetail(model) && <small>{modelDetail(model)}</small>}{model.tool_support && <small>{model.tool_support.profile_name} · {model.tool_support.support === "locally_verified" ? "locally verified profile" : "profile available"}</small>}{model.tool_limitation && <small className="danger">{model.tool_limitation.name}: custom verification required</small>}<span className={stateTone(model.tool_compatibility?.state ?? "not_tested")}>Tool compatibility: {stateLabels[model.tool_compatibility?.state ?? "not_tested"]}</span>{model.tool_compatibility?.error_code && <small className="probe-error-code">{model.tool_compatibility.error_code.replaceAll("_", " ")}</small>}</div>{provider.capabilities.tool_probe && <MotionButton className="button secondary" disabled={working} onClick={() => probeToolCalling(provider, model.id)}>{busy[provider.provider] === `probe:${model.id}` ? <InlineLoading label="Testing tools" /> : "Test tools"}</MotionButton>}</li>)}</ul>
         </section>}
 
         {provider.capabilities.tool_probe && provider.models.length === 0 && <div className="manual-probe"><label>Model name for tool test<input value={manualModel} onChange={event => setManualModels(current => ({ ...current, [provider.provider]: event.target.value }))} placeholder="provider/model-name" pattern="[A-Za-z0-9._:/-]+" /></label><MotionButton className="button secondary" disabled={working || !manualModel || !provider.configured} onClick={() => probeToolCalling(provider, manualModel)}>Test tool calling</MotionButton></div>}
+
+        {provider.provider === "ollama" && <OllamaToolCompatibility models={provider.models} busy={working} onProbe={(model, options) => probeToolCalling(provider, model, options)} />}
 
         {provider.provider === "ollama" && <section className="ollama-pull"><h3>Install another model</h3><p>Downloads stay in the Ollama CLI so disk use, progress, and cancellation remain explicit.</p><label>Model name<input value={pullModels[provider.provider] ?? ""} onChange={event => setPullModels(current => ({ ...current, [provider.provider]: event.target.value }))} placeholder="qwen3-coder:latest" /></label><div><code>ollama pull {pullModels[provider.provider]?.trim() || "<model>"}</code><MotionButton className="button secondary" disabled={!pullModels[provider.provider]?.trim()} onClick={() => copyPullCommand(provider.provider)}>Copy command</MotionButton></div></section>}
         {messages[provider.provider] && <p className="provider-message" role="status">{messages[provider.provider]}</p>}

@@ -40,6 +40,15 @@ class EvaluationOrchestrator:
             raise ValueError("provider is not configured")
         if not provider["ready"]:
             raise ValueError("provider endpoint is not ready")
+        selected_model = next(
+            (model for model in provider["models"] if model.get("id") == request.model),
+            None,
+        )
+        tool_state = selected_model.get("tool_compatibility", {}).get("state") if selected_model else None
+        if selected_model and tool_state == "failed":
+            raise ValueError("selected model failed the required tool compatibility test")
+        if request.provider == "ollama" and selected_model and tool_state != "passed":
+            raise ValueError("selected Ollama model must pass the current tool compatibility test")
         batch_id = "batch_" + uuid.uuid4().hex
         environment_commit = _git_sha("main")
         application_commit = _git_sha("HEAD")

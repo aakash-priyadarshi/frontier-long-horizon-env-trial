@@ -72,6 +72,14 @@ test.describe.serial("polished dashboard journeys", () => {
     await expect(page.getByText("Request arguments").first()).toBeVisible();
   });
 
+  test("5a. runs workspace combines active state and history", async ({ page }) => {
+    await page.goto("/runs");
+    await expect(page.getByRole("heading", { name: "Live runs" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Historical model evaluation runs" })).toContainText("scripted-valid");
+    await expect(page.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
+  });
+
   test("6. comparison charts render strict valid and partial outcomes", async ({ page, request }) => {
     wrongBatch = await launchScripted(page, "scripted-wrong-control");
     const wrong = await (await request.get(`${api}/api/evaluations/${wrongBatch}`)).json();
@@ -114,7 +122,20 @@ test.describe.serial("polished dashboard journeys", () => {
     await expect(page.getByRole("button", { name: "Run scripted demonstration" })).toBeEnabled();
   });
 
-  test("10. provider settings never expose submitted session secrets", async ({ page, request }) => {
+  test("10. Ollama exposes bounded custom compatibility controls and support documentation", async ({ page }) => {
+    await page.goto("/settings");
+    const card = page.getByRole("article", { name: "Ollama (local) provider settings" });
+    await card.getByRole("button", { name: /Supported models & guide/ }).click();
+    await expect(card.getByRole("heading", { name: "Supported native-tool families" })).toBeVisible();
+    await expect(card.getByText("Qwen 3", { exact: true })).toBeVisible();
+    await expect(card.getByText(/Every installed tag still has to pass/)).toBeVisible();
+    await card.getByRole("button", { name: /Test unsupported model/ }).click();
+    await expect(card.getByText("Fake tool only")).toBeVisible();
+    await expect(card.getByLabel(/Context window/)).toHaveValue("16384");
+    await expect(card.getByLabel(/Probe instruction/)).toHaveValue("strict");
+  });
+
+  test("11. provider settings never expose submitted session secrets", async ({ page, request }) => {
     const secret = "playwright-session-secret-never-persist";
     await page.goto("/settings");
     const card = page.getByRole("article", { name: "Anthropic provider settings" });
