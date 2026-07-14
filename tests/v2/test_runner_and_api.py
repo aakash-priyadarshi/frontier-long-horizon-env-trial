@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from evaluation_service.orchestration import EvaluationOrchestrator
 from evaluation_service.persistence import EvaluationStore, record_digest
 from evaluation_service.runner import EpisodeRunner
 from evaluation_service.schemas import EvaluationCreate, EvaluationLimits
-from evaluation_service.settings import Settings
+from evaluation_service.settings import Settings, dashboard_origins
 from model_runners.protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from model_runners.errors import ModelRunnerError
 from model_runners.registry import ProviderRegistry
@@ -265,6 +266,171 @@ def test_api_health_provider_status_and_validation(tmp_path: Path, monkeypatch: 
             json={"provider": "scripted", "model": "scripted-valid", "authoritative_reward": 1},
         )
         assert overwrite.status_code == 422
+
+
+def test_session_credential_api_never_returns_or_persists_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "session-secret-never-persist"
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = create_app(app_settings(tmp_path))
+    headers = {"Origin": "http://localhost:3000"}
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        saved = client.post(
+            "/api/providers/anthropic/credentials",
+            json={"credential": secret},
+            headers=headers,
+        )
+        assert saved.status_code == 200
+        assert saved.headers["cache-control"] == "no-store"
+        assert saved.json()["provider"]["credential"]["source"] == "session"
+        assert secret not in saved.text
+        providers = client.get("/api/providers")
+        assert secret not in providers.text
+        assert next(item for item in providers.json()["items"] if item["provider"] == "anthropic")["configured"] is True
+
+        evaluation = client.post("/api/evaluations", json={"provider": "scripted", "model": "scripted-valid"})
+        batch_id = evaluation.json()["batch_id"]
+        deadline = time.monotonic() + 20
+        batch = {}
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/evaluations/{batch_id}").json()
+            if batch.get("status") == "completed":
+                break
+            time.sleep(0.05)
+        assert batch["status"] == "completed"
+        events = client.get(f"/api/evaluations/{batch_id}/events")
+        exported = client.get(f"/api/exports/{batch_id}.json")
+        assert secret not in events.text
+        assert secret not in exported.text
+        assert secret not in caplog.text
+
+        cleared = client.delete("/api/providers/anthropic/credentials", headers=headers)
+        assert cleared.status_code == 200
+        assert cleared.json()["provider"]["credential"]["source"] == "missing"
+        unavailable = client.post("/api/evaluations", json={"provider": "anthropic", "model": "test-model"})
+        assert unavailable.status_code == 409
+    assert secret.encode() not in (tmp_path / "api.sqlite3").read_bytes()
+
+
+def test_memory_only_credentials_disappear_after_api_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    headers = {"Origin": "http://localhost:3000"}
+    first = create_app(Settings(data_dir=tmp_path, database_path=tmp_path / "first.sqlite3"))
+    with TestClient(first, base_url="http://127.0.0.1:8000") as client:
+        saved = client.post(
+            "/api/providers/gemini/credentials",
+            json={"credential": "restart-session-secret"},
+            headers=headers,
+        )
+        assert saved.json()["provider"]["credential"]["source"] == "session"
+    second = create_app(Settings(data_dir=tmp_path, database_path=tmp_path / "second.sqlite3"))
+    with TestClient(second, base_url="http://127.0.0.1:8000") as client:
+        gemini = next(item for item in client.get("/api/providers").json()["items"] if item["provider"] == "gemini")
+        assert gemini["credential"] == {"state": "missing", "source": "missing", "required": True}
+
+
+def test_concurrent_credential_requests_do_not_mix_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    app = create_app(app_settings(tmp_path))
+    headers = {"Origin": "http://localhost:3000"}
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        def submit(provider: str, secret: str) -> int:
+            return client.post(
+                f"/api/providers/{provider}/credentials",
+                json={"credential": secret},
+                headers=headers,
+            ).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            anthropic = executor.submit(submit, "anthropic", "anthropic-concurrent-secret")
+            gemini = executor.submit(submit, "gemini", "gemini-concurrent-secret")
+        assert anthropic.result() == 200
+        assert gemini.result() == 200
+        runtime = app.state.registry.settings
+        assert runtime.secret_for("anthropic") == "anthropic-concurrent-secret"
+        assert runtime.secret_for("gemini") == "gemini-concurrent-secret"
+        status = client.get("/api/providers").text
+        assert "anthropic-concurrent-secret" not in status
+        assert "gemini-concurrent-secret" not in status
+
+
+def test_invalid_provider_configuration_does_not_echo_or_partially_store_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    secret = "exception-secret-must-not-echo"
+    app = create_app(app_settings(tmp_path))
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        response = client.post(
+            "/api/providers/openai-compatible/credentials",
+            json={"credential": secret, "base_url": f"https://user:{secret}@provider.example/v1"},
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert response.status_code == 422
+        assert secret not in response.text
+        provider = next(item for item in client.get("/api/providers").json()["items"] if item["provider"] == "openai-compatible")
+        assert provider["credential"]["source"] == "missing"
+
+
+def test_provider_control_api_requires_loopback_host_and_dashboard_origin(tmp_path: Path) -> None:
+    secret = "must-not-echo"
+    app = create_app(app_settings(tmp_path))
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        bad_origin = client.post(
+            "/api/providers/anthropic/credentials",
+            json={"credential": secret},
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert bad_origin.status_code == 403
+        assert bad_origin.headers["cache-control"] == "no-store"
+        assert secret not in bad_origin.text
+    second_app = create_app(Settings(data_dir=tmp_path, database_path=tmp_path / "host.sqlite3"))
+    with TestClient(second_app, base_url="http://testserver") as client:
+        bad_host = client.post(
+            "/api/providers/anthropic/credentials",
+            json={"credential": secret},
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert bad_host.status_code == 403
+        assert secret not in bad_host.text
+
+
+def test_dashboard_origin_aliases_are_exact_and_cors_has_no_wildcard(tmp_path: Path) -> None:
+    assert dashboard_origins("http://localhost:3000") == (
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    )
+    assert dashboard_origins("http://localhost:4317") == (
+        "http://127.0.0.1:4317",
+        "http://localhost:4317",
+    )
+    app = create_app(app_settings(tmp_path))
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        for origin in dashboard_origins("http://localhost:3000"):
+            preflight = client.options(
+                "/api/providers/anthropic/credentials",
+                headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+            )
+            assert preflight.status_code == 200
+            assert preflight.headers["access-control-allow-origin"] == origin
+            assert preflight.headers["access-control-allow-origin"] != "*"
+        rejected = client.options(
+            "/api/providers/anthropic/credentials",
+            headers={"Origin": "https://attacker.example", "Access-Control-Request-Method": "POST"},
+        )
+        assert "access-control-allow-origin" not in rejected.headers
 
 
 def test_api_scripted_run_score_export_and_comparison(tmp_path: Path) -> None:

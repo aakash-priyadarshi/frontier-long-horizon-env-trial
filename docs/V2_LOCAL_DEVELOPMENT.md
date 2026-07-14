@@ -19,6 +19,20 @@ Defaults:
 - Dashboard: `http://localhost:3000`
 - API: `http://localhost:8000`
 
+`dev_v2.ps1` configures `http://localhost:<dashboard-port>` as the dashboard
+origin. The API intentionally permits that exact origin and its
+`http://127.0.0.1:<dashboard-port>` loopback alias. It does not use a wildcard
+credential origin.
+
+Open **Settings** in the dashboard to add a hosted-provider key for the current API
+session, test a supported endpoint, discover models, or run an isolated tool-call
+format probe. Session keys override environment variables and disappear when the API
+stops. They are not stored in SQLite or browser storage.
+
+For Ollama, start the local daemon before using **Test connection**. Installed models
+come from `/api/tags`. The page can copy an `ollama pull <model>` command, but model
+downloads remain an explicit CLI operation.
+
 Override ports with `-DashboardPort` / `-ApiPort` or
 `FRONTIER_DASHBOARD_PORT` / `FRONTIER_API_PORT`. The script fails clearly when a
 port is occupied and stops both child processes on interruption.

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .configuration import secret_for
+from .configuration import RuntimeProviderSettings, secret_for
 from .errors import ModelRunnerError, ProviderConfigurationError
 from .protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from .tool_conversion import anthropic_tools
@@ -19,8 +19,11 @@ from .usage import estimate_cost
 class AnthropicAdapter:
     provider = "anthropic"
 
+    def __init__(self, *, settings: RuntimeProviderSettings | None = None) -> None:
+        self._settings = settings
+
     def _request(self, payload: dict[str, Any], config: ModelRequestConfig) -> dict[str, Any]:
-        key = secret_for(self.provider)
+        key = secret_for(self.provider, self._settings)
         if not key:
             raise ProviderConfigurationError("Anthropic credentials are not configured")
         request = urllib.request.Request(
@@ -39,10 +42,11 @@ class AnthropicAdapter:
         except urllib.error.HTTPError as exc:
             raise ModelRunnerError(
                 f"provider request failed with HTTP {exc.code}",
+                code="provider_authentication_failed" if exc.code in {401, 403} else "provider_http_error",
                 retryable=exc.code in {408, 409, 429} or exc.code >= 500,
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise ModelRunnerError("provider request failed", retryable=True) from exc
+            raise ModelRunnerError("provider request failed", code="provider_unreachable", retryable=True) from exc
 
     async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
         system = "\n\n".join(m.content for m in messages if m.role == "system")

@@ -9,25 +9,40 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .configuration import base_url_for, secret_for, validate_provider_base_url
+from .configuration import RuntimeProviderSettings, base_url_for, secret_for, validate_provider_base_url
 from .errors import ModelRunnerError, ProviderConfigurationError
 from .protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool
 from .tool_conversion import openai_messages, openai_tools, parse_openai_tool_calls
 from .usage import estimate_cost
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
 class OpenAICompatibleAdapter:
     provider = "openai-compatible"
 
-    def __init__(self, *, provider: str = "openai-compatible", base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        provider: str = "openai-compatible",
+        base_url: str | None = None,
+        settings: RuntimeProviderSettings | None = None,
+    ) -> None:
         self.provider = provider
         self._base_url = base_url
+        self._settings = settings
 
     def _request(self, payload: dict[str, Any], config: ModelRequestConfig) -> tuple[dict[str, Any], str | None]:
-        key = secret_for(self.provider)
+        key = secret_for(self.provider, self._settings)
         if self.provider != "ollama" and not key:
             raise ProviderConfigurationError(f"{self.provider} credentials are not configured")
-        base_url = validate_provider_base_url(self._base_url or base_url_for(self.provider))
+        base_url = validate_provider_base_url(
+            self._base_url or base_url_for(self.provider, self._settings),
+            local_only=self.provider == "ollama",
+        )
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if key:
             headers["Authorization"] = f"Bearer {key}"
@@ -39,17 +54,18 @@ class OpenAICompatibleAdapter:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
+            opener = urllib.request.build_opener(_NoRedirect())
+            with opener.open(request, timeout=config.timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8")), response.headers.get("x-request-id")
         except urllib.error.HTTPError as exc:
             retryable = exc.code in {408, 409, 429} or exc.code >= 500
             raise ModelRunnerError(
                 f"provider request failed with HTTP {exc.code}",
-                code="provider_http_error",
+                code="provider_authentication_failed" if exc.code in {401, 403} else "provider_http_error",
                 retryable=retryable,
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise ModelRunnerError("provider request failed", retryable=True) from exc
+            raise ModelRunnerError("provider request failed", code="provider_unreachable", retryable=True) from exc
 
     async def complete(
         self,

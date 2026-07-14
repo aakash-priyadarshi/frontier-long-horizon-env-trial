@@ -8,13 +8,15 @@ from typing import Annotated, Any, AsyncIterator
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from model_runners.errors import ProviderConfigurationError
 from model_runners.registry import ProviderRegistry
 
 from ..comparison import compare_batches
 from ..orchestration import EvaluationOrchestrator
 from ..persistence import EvaluationStore, canonical_json
 from ..sanitization import contains_forbidden_public_data
-from ..schemas import EvaluationCreate
+from ..schemas import EvaluationCreate, ProviderSessionConfiguration, ProviderToolProbeRequest
+from ..settings import Settings, dashboard_origins
 
 
 TERMINAL_BATCH = {"completed", "completed_with_errors", "cancelled", "interrupted"}
@@ -25,8 +27,33 @@ def _not_found(kind: str) -> HTTPException:
     return HTTPException(status_code=404, detail={"code": f"{kind}_not_found", "message": f"{kind} was not found"})
 
 
-def build_router(store: EvaluationStore, orchestrator: EvaluationOrchestrator, registry: ProviderRegistry) -> APIRouter:
+def build_router(
+    store: EvaluationStore,
+    orchestrator: EvaluationOrchestrator,
+    registry: ProviderRegistry,
+    settings: Settings,
+) -> APIRouter:
     router = APIRouter(prefix="/api")
+
+    def no_store(value: dict[str, Any], *, status_code: int = 200) -> JSONResponse:
+        return JSONResponse(
+            value,
+            status_code=status_code,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"},
+        )
+
+    def validate_provider_control_request(request: Request) -> None:
+        if request.url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "local_request_required", "message": "provider settings are available only on loopback"},
+            )
+        origin = request.headers.get("origin", "").rstrip("/")
+        if origin not in dashboard_origins(settings.dashboard_origin):
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "origin_not_allowed", "message": "provider settings request origin is not allowed"},
+            )
 
     @router.get("/health")
     async def health() -> dict[str, Any]:
@@ -61,9 +88,71 @@ def build_router(store: EvaluationStore, orchestrator: EvaluationOrchestrator, r
     @router.get("/providers/{provider}/models")
     async def provider_models(provider: str) -> dict[str, Any]:
         try:
-            return {"provider": provider, "items": registry.models(provider)}
+            status = registry.status(provider)
+            return {"provider": provider, "items": status["models"], "model_discovery": status["model_discovery"]}
         except KeyError:
             raise _not_found("provider")
+
+    @router.post("/providers/{provider}/credentials")
+    async def configure_provider(
+        request: Request,
+        provider: str,
+        payload: ProviderSessionConfiguration,
+    ) -> JSONResponse:
+        validate_provider_control_request(request)
+        try:
+            credential = payload.credential.get_secret_value() if payload.credential is not None else None
+            status = registry.set_session_configuration(
+                provider,
+                credential=credential,
+                base_url=payload.base_url,
+                update_base_url="base_url" in payload.model_fields_set,
+            )
+        except KeyError:
+            raise _not_found("provider")
+        except ProviderConfigurationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        return no_store({"provider": status})
+
+    @router.delete("/providers/{provider}/credentials")
+    async def clear_provider_credential(request: Request, provider: str) -> JSONResponse:
+        validate_provider_control_request(request)
+        try:
+            status = registry.clear_session_credential(provider)
+        except KeyError:
+            raise _not_found("provider")
+        return no_store({"provider": status})
+
+    @router.post("/providers/{provider}/connection-test")
+    async def test_provider_connection(request: Request, provider: str) -> JSONResponse:
+        validate_provider_control_request(request)
+        try:
+            status = await registry.discover_models(provider)
+        except KeyError:
+            raise _not_found("provider")
+        return no_store({"provider": status})
+
+    @router.post("/providers/{provider}/tool-probe")
+    async def test_provider_tool_call(
+        request: Request,
+        provider: str,
+        payload: ProviderToolProbeRequest,
+    ) -> JSONResponse:
+        validate_provider_control_request(request)
+        try:
+            result = await registry.probe_tool_call(provider, payload.model)
+            status = registry.status(provider)
+        except KeyError:
+            raise _not_found("provider")
+        except ProviderConfigurationError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        return no_store({"provider": status, "tool_compatibility": result})
 
     @router.post("/evaluations", status_code=202)
     async def create_evaluation(payload: EvaluationCreate) -> dict[str, Any]:

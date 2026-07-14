@@ -15,7 +15,7 @@ from model_runners.registry import ProviderRegistry
 from .api.routes import build_router
 from .orchestration import EvaluationOrchestrator
 from .persistence import EvaluationStore
-from .settings import Settings
+from .settings import Settings, dashboard_origins
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -39,11 +39,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.registry = registry
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.dashboard_origin, "http://127.0.0.1:3000"],
+        allow_origins=list(dashboard_origins(settings.dashboard_origin)),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Last-Event-ID"],
     )
+
+    @app.middleware("http")
+    async def protect_provider_control_responses(request: Request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        if request.url.path.startswith("/api/providers/") and request.method in {"POST", "DELETE"}:
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -59,7 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def unexpected_error(_: Request, __: Exception) -> JSONResponse:
         return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "the evaluation service could not complete the request"}})
 
-    app.include_router(build_router(store, orchestrator, registry))
+    app.include_router(build_router(store, orchestrator, registry, settings))
     return app
 
 

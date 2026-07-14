@@ -2,13 +2,52 @@ export type Provider = {
   provider: string;
   display_name: string;
   configured: boolean;
-  models: { id: string; display_name: string }[];
+  ready: boolean;
+  models: ProviderModel[];
   capabilities: {
     temperature: boolean;
     reasoning_effort: boolean;
     deterministic: boolean;
     custom_model: boolean;
+    custom_base_url: boolean;
+    connection_test: boolean;
+    model_discovery: boolean;
+    tool_probe: boolean;
   };
+  credential: {
+    state: "not_required" | "missing" | "available";
+    source: "not_required" | "missing" | "environment" | "session" | "os_vault";
+    required: boolean;
+  };
+  endpoint: ProviderCheckStatus;
+  authentication: ProviderCheckStatus;
+  model_discovery: ProviderCheckStatus & { count: number };
+  tool_calling: ToolCompatibility;
+  base_url: string | null;
+};
+
+export type ProviderCheckStatus = {
+  state: string;
+  tested_at: string | null;
+  latency_ms?: number;
+};
+
+export type ToolCompatibility = {
+  state: "passed" | "failed" | "not_tested";
+  tested_at: string | null;
+  model?: string;
+  model_digest?: string | null;
+  error_code?: string | null;
+  invalidated?: boolean;
+};
+
+export type ProviderModel = {
+  id: string;
+  display_name: string;
+  size?: number;
+  digest?: string;
+  details?: { family?: string; parameter_size?: string; quantization_level?: string };
+  tool_compatibility?: ToolCompatibility;
 };
 
 export type Run = {

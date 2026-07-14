@@ -5,6 +5,19 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
+
+
+def dashboard_origins(origin: str) -> tuple[str, ...]:
+    """Return the configured dashboard origin and its intentional loopback alias."""
+    configured = origin.rstrip("/")
+    origins = {configured}
+    parsed = urlparse(configured)
+    if parsed.scheme in {"http", "https"} and parsed.hostname in {"localhost", "127.0.0.1"}:
+        alternate = "127.0.0.1" if parsed.hostname == "localhost" else "localhost"
+        netloc = alternate + (f":{parsed.port}" if parsed.port else "")
+        origins.add(urlunparse((parsed.scheme, netloc, "", "", "", "")))
+    return tuple(sorted(origins))
 
 
 @dataclass(frozen=True)

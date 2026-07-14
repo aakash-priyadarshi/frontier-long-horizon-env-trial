@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 
 def utc_now() -> str:
@@ -56,6 +56,27 @@ class EvaluationCreate(BaseModel):
         if self.seed_count * self.attempts > 200:
             raise ValueError("an evaluation may contain at most 200 episodes")
         return self
+
+
+class ProviderSessionConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    credential: SecretStr | None = Field(default=None, max_length=16_384)
+    base_url: str | None = Field(default=None, max_length=2_048)
+
+    @model_validator(mode="after")
+    def require_update(self) -> "ProviderSessionConfiguration":
+        if not self.model_fields_set.intersection({"credential", "base_url"}):
+            raise ValueError("credential or base_url is required")
+        if self.model_fields_set == {"credential"} and self.credential is None:
+            raise ValueError("credential cannot be null")
+        return self
+
+
+class ProviderToolProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")
 
 
 class BatchSummary(BaseModel):

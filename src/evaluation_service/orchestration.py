@@ -38,6 +38,8 @@ class EvaluationOrchestrator:
             raise ValueError("unknown provider")
         if not provider["configured"]:
             raise ValueError("provider is not configured")
+        if not provider["ready"]:
+            raise ValueError("provider endpoint is not ready")
         batch_id = "batch_" + uuid.uuid4().hex
         environment_commit = _git_sha("main")
         application_commit = _git_sha("HEAD")

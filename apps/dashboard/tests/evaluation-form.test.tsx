@@ -5,8 +5,8 @@ import NewEvaluationPage from "@/app/evaluations/new/page";
 
 const providers = {
   items: [
-    { provider: "scripted", display_name: "Scripted", configured: true, models: [{ id: "scripted-valid", display_name: "Scripted valid repair" }, { id: "scripted-wrong-control", display_name: "Scripted wrong-control repair" }], capabilities: { temperature: false, reasoning_effort: false, deterministic: false, custom_model: false } },
-    { provider: "openai-compatible", display_name: "OpenAI compatible", configured: false, models: [], capabilities: { temperature: true, reasoning_effort: true, deterministic: true, custom_model: true } },
+    { provider: "scripted", display_name: "Scripted", configured: true, ready: true, models: [{ id: "scripted-valid", display_name: "Scripted valid repair" }, { id: "scripted-wrong-control", display_name: "Scripted wrong-control repair" }], credential: { state: "not_required", source: "not_required", required: false }, endpoint: { state: "not_tested", tested_at: null }, authentication: { state: "not_required", tested_at: null }, model_discovery: { state: "discovered", count: 2, tested_at: null }, tool_calling: { state: "not_tested", tested_at: null }, base_url: null, capabilities: { temperature: false, reasoning_effort: false, deterministic: false, custom_model: false, custom_base_url: false, connection_test: false, model_discovery: false, tool_probe: false } },
+    { provider: "openai-compatible", display_name: "OpenAI compatible", configured: false, ready: false, models: [], credential: { state: "missing", source: "missing", required: true }, endpoint: { state: "not_tested", tested_at: null }, authentication: { state: "not_tested", tested_at: null }, model_discovery: { state: "not_tested", count: 0, tested_at: null }, tool_calling: { state: "not_tested", tested_at: null }, base_url: "https://api.openai.com/v1", capabilities: { temperature: true, reasoning_effort: true, deterministic: true, custom_model: true, custom_base_url: true, connection_test: true, model_discovery: true, tool_probe: true } },
   ],
 };
 
@@ -26,7 +26,7 @@ test("selects provider and model from capability metadata", async () => {
   expect(screen.getByPlaceholderText("provider/model-name")).toBeInTheDocument();
   expect(screen.getByLabelText("Temperature")).toBeInTheDocument();
   expect(screen.getByLabelText("Reasoning effort")).toBeInTheDocument();
-  expect(screen.getByText("Not configured")).toBeInTheDocument();
+  expect(screen.getByText("Needs attention")).toBeInTheDocument();
 });
 
 test("hides unsupported scripted controls", async () => {

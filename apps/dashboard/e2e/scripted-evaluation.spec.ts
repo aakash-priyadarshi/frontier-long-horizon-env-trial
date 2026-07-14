@@ -55,9 +55,29 @@ test("responsive navigation, provider safety, and reduced motion remain usable",
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Providers and settings" })).toBeVisible();
-  await expect(page.getByText("Keys never reach the browser")).toBeVisible();
+  await expect(page.getByText("Keys stay server-side after submission")).toBeVisible();
   await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
   await page.getByRole("link", { name: "Overview" }).click();
   await expect(page.getByRole("heading", { name: "Evaluation overview" })).toBeVisible();
+});
+
+test("session credentials can be added and cleared without browser persistence", async ({ page, request }) => {
+  const secret = "playwright-session-secret-never-persist";
+  await page.goto("/settings");
+  const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "Anthropic" }) });
+  await card.getByLabel("Anthropic API key").fill(secret);
+  await card.getByRole("button", { name: "Use for session" }).click();
+  await expect(card.getByText("Available for this session")).toBeVisible();
+
+  const browserStorage = await page.evaluate(() => ({
+    local: Object.fromEntries(Object.entries(localStorage)),
+    session: Object.fromEntries(Object.entries(sessionStorage)),
+  }));
+  expect(JSON.stringify(browserStorage)).not.toContain(secret);
+  const providerStatus = await (await request.get(`${api}/api/providers`)).text();
+  expect(providerStatus).not.toContain(secret);
+
+  await card.getByRole("button", { name: "Clear session key" }).click();
+  await expect(card.getByText("Missing")).toBeVisible();
 });

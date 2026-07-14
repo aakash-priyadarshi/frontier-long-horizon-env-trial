@@ -43,7 +43,7 @@ export default function NewEvaluationPage() {
   async function submit(event: FormEvent) {
     event.preventDefault(); setError("");
     if (!confirmed) { setError("Confirm the episode count and scoring authority before starting."); return; }
-    if (!provider?.configured) { setError("The selected provider is not configured on the local API."); return; }
+    if (!provider?.ready) { setError("The selected provider is not ready. Check credentials and connectivity in Settings."); return; }
     setSubmitting(true);
     try {
       const payload = {
@@ -77,7 +77,7 @@ export default function NewEvaluationPage() {
       <fieldset><legend><span>01</span> Provider and model</legend><div className="field-grid">
         <label>Provider<select value={providerName} onChange={event => changeProvider(event.target.value)}>{providers.map(item => <option key={item.provider} value={item.provider}>{item.display_name}</option>)}</select></label>
         <label>Model{models.length ? <select value={model} onChange={event => setModel(event.target.value)}>{models.map(item => <option key={item.id} value={item.id}>{item.display_name}</option>)}</select> : <input required value={model} pattern="[A-Za-z0-9._:/-]+" onChange={event => setModel(event.target.value)} placeholder="provider/model-name" />}</label>
-      </div>{provider && <motion.div layout className={provider.configured ? "provider-status configured" : "provider-status unconfigured"}><ProviderBadge provider={provider.provider} /><strong>{provider.configured ? "Configured" : "Not configured"}</strong><span>{provider.configured ? "Ready on the local API" : "Set the documented server environment variable"}</span></motion.div>}</fieldset>
+      </div>{provider && <motion.div layout className={provider.ready ? "provider-status configured" : "provider-status unconfigured"}><ProviderBadge provider={provider.provider} /><strong>{provider.ready ? "Ready" : "Needs attention"}</strong><span>{provider.credential?.state === "missing" ? "Add a session API key in Settings" : provider.endpoint?.state === "unreachable" ? "Provider endpoint is unavailable" : "Ready on the local API"}</span></motion.div>}</fieldset>
       <fieldset><legend><span>02</span> Episode matrix</legend><div className="field-grid four">
         <label>Split<select value={split} onChange={event => setSplit(event.target.value)}><option>eval</option><option>dev</option><option>train</option></select></label>
         <label>Starting seed<input type="number" min="0" value={seedStart} onChange={event => setSeedStart(event.target.valueAsNumber)} /></label>
@@ -100,7 +100,7 @@ export default function NewEvaluationPage() {
         <label>Token budget <small>optional, per direction</small><input type="number" min="1" value={tokenBudget} onChange={event => setTokenBudget(event.target.value)} placeholder="No limit" /></label>
         <label>Cost budget (USD) <small>optional</small><input type="number" min="0" step="0.01" value={costBudget} onChange={event => setCostBudget(event.target.value)} placeholder="No limit" /></label>
       </div></fieldset>
-      <section className="start-confirmation"><div><span className="eyebrow">Execution summary</span><strong>{episodeCount} episode{episodeCount === 1 ? "" : "s"}</strong><p>{seedCount} seed{seedCount === 1 ? "" : "s"} × {attempts} attempt{attempts === 1 ? "" : "s"}, up to {concurrency} at once.</p></div><label className="confirm-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I understand scores are produced only by the strict verifier.</label><button className="button primary" disabled={submitting || !provider?.configured}>{submitting ? "Starting evaluation…" : providerName === "scripted" ? "Run scripted demonstration" : "Start evaluation"}</button></section>
+      <section className="start-confirmation"><div><span className="eyebrow">Execution summary</span><strong>{episodeCount} episode{episodeCount === 1 ? "" : "s"}</strong><p>{seedCount} seed{seedCount === 1 ? "" : "s"} × {attempts} attempt{attempts === 1 ? "" : "s"}, up to {concurrency} at once.</p></div><label className="confirm-check"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I understand scores are produced only by the strict verifier.</label><button className="button primary" disabled={submitting || !provider?.ready}>{submitting ? "Starting evaluation…" : providerName === "scripted" ? "Run scripted demonstration" : "Start evaluation"}</button></section>
     </form>
   </>;
 }
