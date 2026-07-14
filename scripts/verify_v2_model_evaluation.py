@@ -156,7 +156,11 @@ def provider_security_results() -> dict[str, Any]:
     registry = ProviderRegistry(RuntimeProviderSettings({}))
     for provider in ("anthropic", "gemini"):
         status = registry.status(provider)
-        if status["model_discovery"]["state"] != "unsupported" or not status["capabilities"]["custom_model"]:
+        if (
+            status["model_discovery"]["state"] != "not_tested"
+            or not status["capabilities"]["model_discovery"]
+            or not status["capabilities"]["custom_model"]
+        ):
             raise RuntimeError(f"manual model fallback changed for {provider}")
 
     return {
