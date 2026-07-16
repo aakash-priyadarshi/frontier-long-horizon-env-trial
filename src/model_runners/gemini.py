@@ -13,7 +13,7 @@ from typing import Any
 from .configuration import RuntimeProviderSettings, secret_for
 from .errors import ModelRunnerError, ProviderConfigurationError, ProviderTimeout
 from .protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
-from .tool_conversion import gemini_tools
+from .tool_conversion import gemini_tools, provider_tool_names
 from .usage import estimate_cost
 
 
@@ -47,6 +47,7 @@ class GeminiAdapter:
             raise ModelRunnerError("provider request failed", code="provider_unreachable", retryable=True) from exc
 
     async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
+        tool_names = provider_tool_names(tools)
         system = "\n\n".join(m.content for m in messages if m.role == "system")
         contents: list[dict[str, Any]] = []
         for message in messages:
@@ -56,20 +57,20 @@ class GeminiAdapter:
             parts: list[dict[str, Any]] = []
             if message.content:
                 if message.role == "tool":
-                    parts.append({"functionResponse": {"name": message.name or "tool", "response": {"result": message.content}}})
+                    parts.append({"functionResponse": {"name": tool_names.provider_name(message.name or "tool"), "response": {"result": message.content}}})
                 else:
                     parts.append({"text": message.content})
-            parts.extend({"functionCall": {"name": call.name, "args": call.arguments}} for call in message.tool_calls)
+            parts.extend({"functionCall": {"name": tool_names.provider_name(call.name), "args": call.arguments}} for call in message.tool_calls)
             contents.append({"role": role, "parts": parts})
         generation: dict[str, Any] = {"maxOutputTokens": config.max_output_tokens}
         if config.temperature is not None:
             generation["temperature"] = 0 if config.deterministic else config.temperature
-        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "tools": gemini_tools(tools), "generationConfig": generation}
+        payload = {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "tools": gemini_tools(tools, names=tool_names), "generationConfig": generation}
         if config.required_tool:
             payload["toolConfig"] = {
                 "functionCallingConfig": {
                     "mode": "ANY",
-                    "allowedFunctionNames": [config.required_tool],
+                    "allowedFunctionNames": [tool_names.provider_name(config.required_tool)],
                 }
             }
         started = time.perf_counter()
@@ -86,7 +87,7 @@ class GeminiAdapter:
                 texts.append(str(part["text"]))
             if "functionCall" in part:
                 call = part["functionCall"]
-                calls.append(ModelToolCall(f"gemini-{index}", str(call.get("name")), dict(call.get("args") or {})))
+                calls.append(ModelToolCall(f"gemini-{index}", tool_names.canonical_name(str(call.get("name"))), dict(call.get("args") or {})))
         usage = body.get("usageMetadata") or {}
         input_tokens = int(usage.get("promptTokenCount") or 0)
         output_tokens = int(usage.get("candidatesTokenCount") or 0)

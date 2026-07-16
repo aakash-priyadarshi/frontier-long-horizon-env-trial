@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, urlunparse
 
@@ -20,6 +23,7 @@ from .ollama_support import (
     profile_for_model,
     public_support_catalog,
     support_for_model,
+    supports_reasoning_effort,
 )
 from .openai_compatible import OpenAICompatibleAdapter
 from .protocol import ModelAdapter, ModelMessage, ModelRequestConfig, ModelTool
@@ -90,8 +94,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ProviderRegistry:
-    def __init__(self, settings: RuntimeProviderSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: RuntimeProviderSettings | None = None,
+        *,
+        state_path: Path | None = None,
+    ) -> None:
         self.settings = settings or RuntimeProviderSettings()
+        self._state_path = state_path
+        self._state_lock = threading.RLock()
         self._factories: dict[str, Callable[[], ModelAdapter]] = {
             "scripted": ScriptedAdapter,
             "openai-compatible": lambda: OpenAICompatibleAdapter(settings=self.settings),
@@ -104,6 +115,143 @@ class ProviderRegistry:
         self._model_status: dict[str, dict[str, Any]] = {}
         self._discovered_models: dict[str, list[dict[str, Any]]] = {}
         self._tool_probes: dict[tuple[str, str], dict[str, Any]] = {}
+        self._load_state()
+
+    def _endpoint_binding(self, provider: str) -> str:
+        try:
+            return self.settings.public_base_url(provider) or f"provider:{provider}"
+        except ProviderConfigurationError:
+            return f"provider:{provider}:invalid"
+
+    @staticmethod
+    def _safe_cached_model(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        model_id = value.get("id")
+        display_name = value.get("display_name")
+        if not isinstance(model_id, str) or not model_id or len(model_id) > 200:
+            return None
+        result: dict[str, Any] = {
+            "id": model_id,
+            "display_name": display_name if isinstance(display_name, str) and len(display_name) <= 300 else model_id,
+        }
+        if isinstance(value.get("size"), int) and 0 <= value["size"] <= 2**63 - 1:
+            result["size"] = value["size"]
+        if isinstance(value.get("digest"), str) and len(value["digest"]) <= 256:
+            result["digest"] = value["digest"]
+        details = value.get("details")
+        if isinstance(details, dict):
+            safe_details = {
+                key: details[key]
+                for key in ("family", "parameter_size", "quantization_level")
+                if isinstance(details.get(key), str) and len(details[key]) <= 200
+            }
+            if safe_details:
+                result["details"] = safe_details
+        return result
+
+    @staticmethod
+    def _safe_cached_probe(provider: str, model: str, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value.get("state") not in {"passed", "failed"}:
+            return None
+        tested_at = value.get("tested_at")
+        if not isinstance(tested_at, str) or len(tested_at) > 64:
+            return None
+        record: dict[str, Any] = {
+            "state": value["state"],
+            "tested_at": tested_at,
+            "model": model,
+            "model_digest": value.get("model_digest") if isinstance(value.get("model_digest"), str) else None,
+            "profile": None,
+            "observed": None,
+            "error_code": value.get("error_code") if isinstance(value.get("error_code"), str) and len(value["error_code"]) <= 100 else None,
+            "endpoint_binding": value.get("endpoint_binding") if isinstance(value.get("endpoint_binding"), str) and len(value["endpoint_binding"]) <= 2_048 else f"provider:{provider}",
+        }
+        profile = value.get("profile")
+        if provider == "ollama" and isinstance(profile, dict):
+            allowed_profile = {
+                key: profile[key]
+                for key in (
+                    "context_window", "max_output_tokens", "retry_output_tokens",
+                    "timeout_seconds", "temperature", "thinking", "prompt_style",
+                )
+                if isinstance(profile.get(key), (str, int, float, type(None)))
+            }
+            record["profile"] = allowed_profile
+        observed = value.get("observed")
+        if isinstance(observed, dict):
+            record["observed"] = {
+                "finish_reason": observed.get("finish_reason") if isinstance(observed.get("finish_reason"), str) else None,
+                "tool_call_count": observed.get("tool_call_count") if isinstance(observed.get("tool_call_count"), int) else 0,
+                "returned_text": bool(observed.get("returned_text")),
+                "returned_reasoning": bool(observed.get("returned_reasoning")),
+            }
+        return record
+
+    def _load_state(self) -> None:
+        path = self._state_path
+        if path is None or not path.is_file():
+            return
+        try:
+            if path.stat().st_size > 5_000_000:
+                return
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return
+        providers = body.get("providers") if isinstance(body, dict) and body.get("version") == 1 else None
+        if not isinstance(providers, dict):
+            return
+        for provider, value in providers.items():
+            if provider not in {str(item["provider"]) for item in PROVIDERS} or not isinstance(value, dict):
+                continue
+            models = value.get("models")
+            if isinstance(models, list) and len(models) <= 5_000:
+                safe_models = [item for item in (self._safe_cached_model(model) for model in models) if item]
+                self._discovered_models[provider] = safe_models
+                self._model_status[provider] = {
+                    "state": "discovered", "count": len(safe_models),
+                    "tested_at": value.get("models_tested_at") if isinstance(value.get("models_tested_at"), str) else None,
+                    "cached": True,
+                }
+            probes = value.get("tool_probes")
+            if isinstance(probes, dict) and len(probes) <= 5_000:
+                for model, probe in probes.items():
+                    if isinstance(model, str) and 0 < len(model) <= 200:
+                        safe_probe = self._safe_cached_probe(provider, model, probe)
+                        if safe_probe is not None:
+                            self._tool_probes[(provider, model)] = safe_probe
+
+    def _save_state(self) -> None:
+        path = self._state_path
+        if path is None:
+            return
+        providers: dict[str, Any] = {}
+        for definition in PROVIDERS:
+            provider = str(definition["provider"])
+            if provider == "scripted":
+                continue
+            models = self._discovered_models.get(provider)
+            probes = {
+                model: record
+                for (record_provider, model), record in self._tool_probes.items()
+                if record_provider == provider
+            }
+            if models is not None or probes:
+                providers[provider] = {
+                    "models": models or [],
+                    "models_tested_at": self._model_status.get(provider, {}).get("tested_at"),
+                    "tool_probes": probes,
+                }
+        content = json.dumps({"version": 1, "providers": providers}, sort_keys=True, separators=(",", ":")) + "\n"
+        with self._state_lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+                temporary.write_text(content, encoding="utf-8")
+                os.replace(temporary, path)
+            except OSError:
+                # Persistence is a convenience cache; provider operations remain usable.
+                return
 
     @staticmethod
     def _definition(provider: str) -> dict[str, Any]:
@@ -141,10 +289,12 @@ class ProviderRegistry:
         record = self._tool_probes.get((provider, str(model["id"])))
         if record is None:
             return {"state": "not_tested", "tested_at": None}
+        if record.get("endpoint_binding") is not None and record.get("endpoint_binding") != self._endpoint_binding(provider):
+            return {"state": "not_tested", "tested_at": None, "invalidated": True}
         digest = model.get("digest")
         if digest and record.get("model_digest") != digest:
             return {"state": "not_tested", "tested_at": None, "invalidated": True}
-        return dict(record)
+        return {key: value for key, value in record.items() if key != "endpoint_binding"}
 
     def models(self, provider: str) -> list[dict[str, Any]]:
         definition = self._definition(provider)
@@ -169,6 +319,9 @@ class ProviderRegistry:
                     else None
                 ),
                 "tool_limitation": limitation,
+                "inference_capabilities": {
+                    "reasoning_effort": supports_reasoning_effort(str(model["id"])),
+                },
             })
         return enriched
 
@@ -191,7 +344,8 @@ class ProviderRegistry:
             current_model = model_by_id.get(record_model)
             if current_model and current_model.get("digest") and current_model.get("digest") != record.get("model_digest"):
                 continue
-            probes.append(record)
+            if record.get("endpoint_binding") is None or record.get("endpoint_binding") == self._endpoint_binding(provider):
+                probes.append(record)
         latest_probe = max(probes, key=lambda item: str(item.get("tested_at") or ""), default=None)
         try:
             public_base_url = self.settings.public_base_url(provider)
@@ -209,7 +363,10 @@ class ProviderRegistry:
             "endpoint": endpoint,
             "authentication": authentication,
             "model_discovery": model_status,
-            "tool_calling": dict(latest_probe) if latest_probe else {"state": "not_tested", "tested_at": None},
+            "tool_calling": (
+                {key: value for key, value in latest_probe.items() if key != "endpoint_binding"}
+                if latest_probe else {"state": "not_tested", "tested_at": None}
+            ),
             "base_url": public_base_url,
         }
 
@@ -229,31 +386,47 @@ class ProviderRegistry:
         credential: str | None = None,
         base_url: str | None = None,
         update_base_url: bool = False,
+        persist: bool = False,
     ) -> dict[str, Any]:
         self._definition(provider)
-        self.settings.update_session(
-            provider,
-            credential=credential,
-            update_credential=credential is not None,
-            base_url=base_url,
-            update_base_url=update_base_url,
-        )
-        self._reset_runtime_status(provider)
+        previous_binding = self._endpoint_binding(provider)
+        if persist:
+            self.settings.persist_local(
+                provider,
+                credential=credential,
+                update_credential=credential is not None,
+                base_url=base_url,
+                update_base_url=update_base_url,
+            )
+        else:
+            self.settings.update_session(
+                provider,
+                credential=credential,
+                update_credential=credential is not None,
+                base_url=base_url,
+                update_base_url=update_base_url,
+            )
+        self._reset_runtime_status(provider, clear_cache=previous_binding != self._endpoint_binding(provider))
         return self.status(provider)
 
-    def clear_session_credential(self, provider: str) -> dict[str, Any]:
+    def clear_session_credential(self, provider: str, *, remove_local: bool = False) -> dict[str, Any]:
         self._definition(provider)
-        self.settings.clear_session_credential(provider)
+        if remove_local:
+            self.settings.clear_local_credential(provider)
+        else:
+            self.settings.clear_session_credential(provider)
         self._reset_runtime_status(provider)
         return self.status(provider)
 
-    def _reset_runtime_status(self, provider: str) -> None:
+    def _reset_runtime_status(self, provider: str, *, clear_cache: bool = False) -> None:
         self._endpoint.pop(provider, None)
         self._authentication.pop(provider, None)
-        self._model_status.pop(provider, None)
-        self._discovered_models.pop(provider, None)
-        for key in [key for key in self._tool_probes if key[0] == provider]:
-            self._tool_probes.pop(key, None)
+        if clear_cache:
+            self._model_status.pop(provider, None)
+            self._discovered_models.pop(provider, None)
+            for key in [key for key in self._tool_probes if key[0] == provider]:
+                self._tool_probes.pop(key, None)
+            self._save_state()
 
     def _discovery_url(self, provider: str) -> str:
         if provider == "anthropic":
@@ -350,25 +523,23 @@ class ProviderRegistry:
                 "not_required" if self.settings.credential_source(provider) == "not_required" else "not_tested"
             )
             self._authentication[provider] = {"state": auth_state, "tested_at": tested_at}
-            self._model_status[provider] = {"state": "failed", "count": 0, "tested_at": tested_at}
-            self._discovered_models.pop(provider, None)
+            self._model_status[provider] = {"state": "failed", "count": len(self._discovered_models.get(provider, [])), "tested_at": tested_at}
         except (urllib.error.URLError, TimeoutError, OSError):
             self._endpoint[provider] = {"state": "unreachable", "tested_at": tested_at}
             self._authentication[provider] = self._default_authentication(provider) | {"tested_at": tested_at}
-            self._model_status[provider] = {"state": "failed", "count": 0, "tested_at": tested_at}
-            self._discovered_models.pop(provider, None)
+            self._model_status[provider] = {"state": "failed", "count": len(self._discovered_models.get(provider, [])), "tested_at": tested_at}
         except (ValueError, ModelRunnerError, ProviderConfigurationError):
             self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at}
             auth_state = "not_required" if self.settings.credential_source(provider) == "not_required" else "valid"
             self._authentication[provider] = {"state": auth_state, "tested_at": tested_at}
-            self._model_status[provider] = {"state": "failed", "count": 0, "tested_at": tested_at}
-            self._discovered_models.pop(provider, None)
+            self._model_status[provider] = {"state": "failed", "count": len(self._discovered_models.get(provider, [])), "tested_at": tested_at}
         else:
             self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at, "latency_ms": latency_ms}
             auth_state = "not_required" if self.settings.credential_source(provider) == "not_required" else "valid"
             self._authentication[provider] = {"state": auth_state, "tested_at": tested_at}
             self._discovered_models[provider] = models
             self._model_status[provider] = {"state": "discovered", "count": len(models), "tested_at": tested_at}
+            self._save_state()
         return self.status(provider)
 
     async def probe_tool_call(
@@ -491,6 +662,7 @@ class ProviderRegistry:
                     if response.finish_reason in {"length", "max_tokens", "MAX_TOKENS"}
                     else "invalid_tool_call"
                 ),
+                "endpoint_binding": self._endpoint_binding(provider),
             }
             self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at}
             self._authentication[provider] = {
@@ -502,6 +674,7 @@ class ProviderRegistry:
                 "state": "failed", "tested_at": tested_at, "model": model,
                 "model_digest": digest, "profile": dict(profile) if is_ollama else None,
                 "observed": None, "error_code": exc.code,
+                "endpoint_binding": self._endpoint_binding(provider),
             }
             if exc.code == "provider_authentication_failed":
                 self._endpoint[provider] = {"state": "reachable", "tested_at": tested_at}
@@ -513,6 +686,8 @@ class ProviderRegistry:
                 "state": "failed", "tested_at": tested_at, "model": model,
                 "model_digest": digest, "profile": dict(profile) if is_ollama else None,
                 "observed": None, "error_code": "provider_error",
+                "endpoint_binding": self._endpoint_binding(provider),
             }
         self._tool_probes[(provider, model)] = record
-        return dict(record)
+        self._save_state()
+        return {key: value for key, value in record.items() if key != "endpoint_binding"}

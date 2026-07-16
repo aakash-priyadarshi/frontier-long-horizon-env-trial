@@ -38,9 +38,18 @@ async def run_request(tmp_path: Path, model: str) -> dict:
 async def test_scripted_valid_model_uses_real_verifier(tmp_path: Path) -> None:
     run = await run_request(tmp_path, "scripted-valid")
     assert run["authoritative_reward"] == 1.0
+    assert run["candidate_diff_summary"]["retention"]["captured"] is True
     assert run["authoritative_verdict"] == "pass"
     assert run["action_count"] == 20
     assert len(run["distinct_tools"]) == 12
+    assert all(action["success"] for action in run["authenticated_timeline"])
+    s5_diagnostic = next(
+        action
+        for action in run["authenticated_timeline"]
+        if action["tool"] == "runtime.run"
+        and action["arguments"].get("cutpoint") == "s5.exit"
+    )
+    assert s5_diagnostic["result_summary"]["outcome"] == "cutpoint"
     assert record_digest(run) == run["record_digest"]
     payload = json.dumps(run)
     assert "auth_tag" not in payload
@@ -121,9 +130,11 @@ class CapturingConfigAdapter:
 
     def __init__(self) -> None:
         self.configs: list[ModelRequestConfig] = []
+        self.messages: list[list[ModelMessage]] = []
 
     async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
         self.configs.append(config)
+        self.messages.append(list(messages))
         return ModelResponse(finish_reason="stop")
 
 
@@ -145,6 +156,28 @@ class CapabilityFollowingAdapter:
         return ModelResponse(finish_reason="stop")
 
 
+class PrivateContinuationAdapter:
+    provider = "test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.replayed = False
+
+    async def complete(self, *, messages: list[ModelMessage], tools: list[ModelTool], config: ModelRequestConfig) -> ModelResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(
+                reasoning="opaque-encrypted-provider-continuation",
+                tool_calls=(ModelToolCall("status", "release.status", {}),),
+                reasoning_tokens=7,
+            )
+        self.replayed = any(
+            message.role == "assistant" and message.reasoning == "opaque-encrypted-provider-continuation"
+            for message in messages
+        )
+        return ModelResponse(finish_reason="stop")
+
+
 @pytest.mark.asyncio
 async def test_ollama_episodes_do_not_silently_disable_thinking(tmp_path: Path) -> None:
     adapter = CapturingConfigAdapter()
@@ -152,6 +185,9 @@ async def test_ollama_episodes_do_not_silently_disable_thinking(tmp_path: Path) 
     assert outcome["status"] == "completed"
     assert adapter.configs
     assert adapter.configs[0].reasoning_effort is None
+    assert adapter.messages[0][-1].content.endswith(
+        "Begin now by calling release.status. Your next response must be a native tool call, not prose."
+    )
     assert outcome["model_turn_debug"][0]["tool_call_count"] == 0
     assert outcome["tool_use_debug"]["primary_cause"]["code"] == "no_tool_calls"
 
@@ -166,6 +202,19 @@ async def test_ephemeral_trace_handle_reaches_model_but_not_public_record(tmp_pa
     assert all(entry["success"] for entry in outcome["authenticated_timeline"])
     assert "handle" not in outcome["authenticated_timeline"][0]["result_summary"]
     assert "handle" not in outcome["authenticated_timeline"][1]["arguments"]
+    tool_events = [data for name, data in outcome["events"] if name == "tool_completed"]
+    assert [event["timeline_entry"] for event in tool_events] == outcome["authenticated_timeline"]
+    assert "handle" not in json.dumps(tool_events)
+
+
+@pytest.mark.asyncio
+async def test_private_provider_continuation_is_replayed_in_memory_but_never_recorded(tmp_path: Path) -> None:
+    adapter = PrivateContinuationAdapter()
+    outcome = await direct_episode(tmp_path, adapter)
+    assert adapter.replayed is True
+    assert outcome["model_turn_debug"][0]["has_reasoning"] is True
+    assert outcome["reasoning_tokens"] == 7
+    assert "opaque-encrypted-provider-continuation" not in json.dumps(outcome)
 
 
 @pytest.mark.asyncio
@@ -386,6 +435,38 @@ def test_orchestrator_requires_current_passing_ollama_tool_test(tmp_path: Path) 
     store.close()
 
 
+def test_orchestrator_omits_unsupported_ollama_reasoning_setting(tmp_path: Path) -> None:
+    registry = ProviderRegistry(RuntimeProviderSettings({}))
+    registry._discovered_models["ollama"] = [{
+        "id": "llama3.1:8b",
+        "display_name": "llama3.1:8b",
+        "digest": "digest-one",
+    }]
+    registry._tool_probes[("ollama", "llama3.1:8b")] = {
+        "state": "passed",
+        "tested_at": "2026-07-15T00:00:00Z",
+        "model": "llama3.1:8b",
+        "model_digest": "digest-one",
+        "error_code": None,
+    }
+    registry._endpoint["ollama"] = {"state": "reachable", "tested_at": "2026-07-15T00:00:00Z"}
+    store = EvaluationStore(tmp_path / "llama-reasoning.sqlite3")
+    orchestrator = EvaluationOrchestrator(store, registry)
+    batch_id = orchestrator.create(
+        EvaluationCreate(
+            provider="ollama",
+            model="llama3.1:8b",
+            model_configuration={"reasoning_effort": "low"},
+        ),
+        start_background=False,
+    )
+    batch = store.get_batch(batch_id)
+    assert batch is not None
+    assert batch["configuration"]["model_configuration"]["reasoning_effort"] is None
+    assert batch["runs"][0]["model_configuration"]["reasoning_effort"] is None
+    store.close()
+
+
 def test_api_health_provider_status_and_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "api-secret-must-never-return"
     monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
@@ -483,6 +564,42 @@ def test_memory_only_credentials_disappear_after_api_restart(
     with TestClient(second, base_url="http://127.0.0.1:8000") as client:
         gemini = next(item for item in client.get("/api/providers").json()["items"] if item["provider"] == "gemini")
         assert gemini["credential"] == {"state": "missing", "source": "missing", "required": True}
+
+
+def test_opt_in_local_env_credential_survives_restart_without_public_or_database_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "local-env-restart-secret"
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    headers = {"Origin": "http://localhost:3000"}
+    first = create_app(Settings(data_dir=tmp_path, database_path=tmp_path / "first.sqlite3"))
+    with TestClient(first, base_url="http://127.0.0.1:8000") as client:
+        saved = client.post(
+            "/api/providers/gemini/credentials",
+            json={"credential": secret, "persist": True},
+            headers=headers,
+        )
+        assert saved.status_code == 200
+        assert saved.json()["provider"]["credential"]["source"] == "local_env"
+        assert secret not in saved.text
+    env_path = tmp_path / ".env"
+    assert secret in env_path.read_text(encoding="utf-8")
+    assert secret.encode() not in (tmp_path / "first.sqlite3").read_bytes()
+
+    second = create_app(Settings(data_dir=tmp_path, database_path=tmp_path / "second.sqlite3"))
+    with TestClient(second, base_url="http://127.0.0.1:8000") as client:
+        providers = client.get("/api/providers")
+        gemini = next(item for item in providers.json()["items"] if item["provider"] == "gemini")
+        assert gemini["credential"] == {"state": "available", "source": "local_env", "required": True}
+        assert secret not in providers.text
+        removed = client.delete(
+            "/api/providers/gemini/credentials?remove_local=true",
+            headers=headers,
+        )
+        assert removed.json()["provider"]["credential"]["source"] == "missing"
+        assert secret not in removed.text
+    assert secret not in env_path.read_text(encoding="utf-8")
 
 
 def test_concurrent_credential_requests_do_not_mix_providers(
@@ -614,6 +731,52 @@ def test_api_scripted_run_score_export_and_comparison(tmp_path: Path) -> None:
         assert "auth_tag" not in text and "H-" not in text and "member_selector" not in text
         comparison = client.get("/api/comparisons", params={"batch": batch_id}).json()
         assert comparison["groups"][0]["strict_success_rate"] == 1.0
+
+
+def test_api_candidate_diff_retention_cleanup_and_episode_deletion(tmp_path: Path) -> None:
+    app = create_app(app_settings(tmp_path))
+    headers = {"Origin": "http://localhost:3000"}
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        response = client.post(
+            "/api/evaluations",
+            json={"provider": "scripted", "model": "scripted-valid"},
+        )
+        batch_id = response.json()["batch_id"]
+        deadline = time.monotonic() + 20
+        batch: dict = {}
+        while time.monotonic() < deadline:
+            batch = client.get(f"/api/evaluations/{batch_id}").json()
+            if batch.get("status") == "completed":
+                break
+            time.sleep(0.05)
+        run_id = batch["runs"][0]["run_id"]
+
+        run = client.get(f"/api/runs/{run_id}")
+        assert run.status_code == 200
+        body = run.json()
+        assert body["candidate_diff_storage"]["state"] == "available"
+        assert body["candidate_diff"]["files"]
+        assert body["candidate_diff"]["artifact_digest"] == body["candidate_diff_summary"]["retention"]["artifact_digest"]
+        record_digest_before = body["record_digest"]
+        assert client.get("/api/storage/candidate-diffs").json()["available_count"] == 1
+
+        rejected = client.delete(
+            f"/api/runs/{run_id}/candidate-diff",
+            headers={"Origin": "https://attacker.example"},
+        )
+        assert rejected.status_code == 403
+        cleaned = client.delete(f"/api/runs/{run_id}/candidate-diff", headers=headers)
+        assert cleaned.status_code == 200
+        assert cleaned.json()["reclaimed_bytes"] > 0
+        after_cleanup = client.get(f"/api/runs/{run_id}").json()
+        assert after_cleanup["candidate_diff_storage"]["state"] == "deleted"
+        assert after_cleanup["record_digest"] == record_digest_before
+        assert "candidate_diff" not in after_cleanup
+
+        deleted = client.delete(f"/api/runs/{run_id}", headers=headers)
+        assert deleted.status_code == 200
+        assert client.get(f"/api/runs/{run_id}").status_code == 404
+        assert client.get(f"/api/evaluations/{batch_id}").status_code == 404
 
 
 def test_api_errors_have_no_traceback_or_local_path(tmp_path: Path) -> None:

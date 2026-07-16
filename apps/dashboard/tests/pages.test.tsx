@@ -49,8 +49,38 @@ test("settings submits a session key and never writes it to browser storage", as
   expect(await screen.findByText(/Session settings updated/)).toBeInTheDocument();
   const submitted = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")?.[1];
   expect(String(submitted?.body)).toContain("browser-session-secret");
+  expect(JSON.parse(String(submitted?.body))).toMatchObject({ persist: false });
   expect(input).toHaveValue("");
   expect(JSON.stringify({ ...window.localStorage, ...window.sessionStorage })).not.toContain("browser-session-secret");
+});
+
+test("settings explicitly opts into local env persistence without browser storage", async () => {
+  const missing = { ...anthropicProvider, configured: false, ready: false, credential: { state: "missing", source: "missing", required: true } };
+  const local = { ...anthropicProvider, credential: { state: "available", source: "local_env", required: true } };
+  const fetchMock = vi.fn((_url: string, init?: RequestInit) => init?.method === "POST" ? response({ provider: local }) : response({ items: [missing] }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<SettingsPage />);
+  await userEvent.type(await screen.findByLabelText("Anthropic API key"), "local-browser-secret");
+  await userEvent.click(screen.getByLabelText(/Save to local .env/));
+  await userEvent.click(screen.getByRole("button", { name: "Save locally" }));
+  expect(await screen.findByText(/saved to the local .env/)).toBeInTheDocument();
+  const submitted = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")?.[1];
+  expect(JSON.parse(String(submitted?.body))).toMatchObject({ credential: "local-browser-secret", persist: true });
+  expect(JSON.stringify({ ...window.localStorage, ...window.sessionStorage })).not.toContain("local-browser-secret");
+  expect(screen.getByRole("button", { name: "Remove saved key" })).toBeInTheDocument();
+});
+
+test("large provider catalogs remain bounded and searchable", async () => {
+  const models = Array.from({ length: 125 }, (_, index) => ({ id: `gpt-catalog-${index}`, display_name: `Catalog model ${index}` }));
+  vi.stubGlobal("fetch", vi.fn(() => response({ items: [{ ...anthropicProvider, models, model_discovery: { state: "discovered", count: models.length, tested_at: "2026-07-16T00:00:00Z" } }] })));
+  render(<SettingsPage />);
+  const search = await screen.findByLabelText("Search Anthropic models");
+  expect(screen.getByText("125 of 125")).toBeInTheDocument();
+  expect(document.querySelector(".discovered-models ul")).toBeInTheDocument();
+  await userEvent.type(search, "catalog-124");
+  expect(await screen.findByText("1 of 125")).toBeInTheDocument();
+  expect(screen.getByText("Catalog model 124")).toBeInTheDocument();
+  expect(screen.queryByText("Catalog model 0")).not.toBeInTheDocument();
 });
 
 test("unsupported discovery remains neutral and manual model probes stay available", async () => {

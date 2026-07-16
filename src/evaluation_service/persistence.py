@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
+from .candidate_artifacts import candidate_artifact_digest
 from .events import EvaluationEvent
 from .schemas import EvaluationCreate, utc_now
 
@@ -34,6 +37,10 @@ class ImmutableRecordError(RuntimeError):
     pass
 
 
+class ActiveRunDeletionError(RuntimeError):
+    pass
+
+
 class EvaluationStore:
     def __init__(self, path: Path | str, *, event_replay_limit: int = 1_000) -> None:
         self.path = Path(path)
@@ -48,6 +55,16 @@ class EvaluationStore:
 
     def close(self) -> None:
         self._connection.close()
+
+    def _run_directory(self, run_id: str) -> Path:
+        base = self.runs_dir.resolve()
+        target = (self.runs_dir / run_id).resolve()
+        if target.parent != base or target.name != run_id:
+            raise ValueError("invalid run storage path")
+        return target
+
+    def _candidate_artifact_path(self, run_id: str) -> Path:
+        return self._run_directory(run_id) / "candidate-diff.json"
 
     def _migrate(self) -> None:
         with self._connection:
@@ -161,7 +178,14 @@ class EvaluationStore:
                 (status, utc_now(), updates.get("instance_id"), canonical_json(payload), run_id),
             )
 
-    def finalize_run(self, run_id: str, status: str, result_payload: dict[str, Any]) -> str:
+    def finalize_run(
+        self,
+        run_id: str,
+        status: str,
+        result_payload: dict[str, Any],
+        *,
+        candidate_artifact: dict[str, Any] | None = None,
+    ) -> str:
         if status not in TERMINAL_RUN_STATUSES:
             raise ValueError("final run status must be terminal")
         with self._lock, self._connection:
@@ -172,10 +196,49 @@ class EvaluationStore:
                 raise ImmutableRecordError("terminal run records are immutable")
             payload = json.loads(row["payload_json"])
             payload.update(result_payload)
+            artifact_bytes: bytes | None = None
+            if candidate_artifact is not None:
+                declared_digest = candidate_artifact.get("artifact_digest")
+                actual_digest = candidate_artifact_digest(candidate_artifact)
+                if declared_digest != actual_digest:
+                    raise ValueError("candidate artifact digest is invalid")
+                artifact_bytes = (
+                    json.dumps(candidate_artifact, indent=2, sort_keys=True) + "\n"
+                ).encode("utf-8")
+                payload["candidate_diff_summary"] = {
+                    "changed_paths": list(candidate_artifact.get("changed_paths") or []),
+                    "file_count": int(candidate_artifact.get("file_count") or 0),
+                    "retention": {
+                        "captured": True,
+                        "artifact_digest": actual_digest,
+                        "stored_bytes": len(artifact_bytes),
+                        "redaction_count": int(candidate_artifact.get("redaction_count") or 0),
+                        "truncated": bool(candidate_artifact.get("truncated")),
+                    },
+                }
+            else:
+                summary = payload.get("candidate_diff_summary")
+                if not isinstance(summary, dict):
+                    summary = {"changed_paths": [], "file_count": 0}
+                payload["candidate_diff_summary"] = {
+                    **summary,
+                    "retention": {
+                        "captured": False,
+                        "artifact_digest": None,
+                        "stored_bytes": 0,
+                        "redaction_count": 0,
+                        "truncated": False,
+                    },
+                }
             payload["status"] = status
             payload["ended_at"] = payload.get("ended_at") or utc_now()
             digest = record_digest(payload)
             payload["record_digest"] = digest
+            artifact_path = self._candidate_artifact_path(run_id)
+            if artifact_bytes is not None:
+                if artifact_path.exists():
+                    raise ImmutableRecordError("candidate artifact already exists")
+                artifact_path.write_bytes(artifact_bytes)
             self._connection.execute(
                 "UPDATE runs SET status=?, updated_at=?, instance_id=COALESCE(?,instance_id), payload_json=?, digest=? WHERE run_id=?",
                 (status, utc_now(), payload.get("instance_id"), canonical_json(payload), digest, run_id),
@@ -185,6 +248,168 @@ class EvaluationStore:
                 raise ImmutableRecordError("terminal run artifact already exists")
             artifact.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             return digest
+
+    def candidate_artifact(self, run_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        row = self._connection.execute(
+            "SELECT payload_json FROM runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        payload = json.loads(row["payload_json"])
+        summary = payload.get("candidate_diff_summary") or {}
+        retention = summary.get("retention") if isinstance(summary, dict) else None
+        if not isinstance(retention, dict) or not retention.get("captured"):
+            return None, {"state": "not_captured", "stored_bytes": 0}
+        expected_digest = retention.get("artifact_digest")
+        artifact_path = self._candidate_artifact_path(run_id)
+        if not artifact_path.is_file():
+            return None, {
+                "state": "deleted",
+                "stored_bytes": 0,
+                "artifact_digest": expected_digest,
+            }
+        try:
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            actual_digest = candidate_artifact_digest(artifact)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return None, {
+                "state": "corrupt",
+                "stored_bytes": artifact_path.stat().st_size,
+                "artifact_digest": expected_digest,
+            }
+        if artifact.get("artifact_digest") != actual_digest or actual_digest != expected_digest:
+            return None, {
+                "state": "corrupt",
+                "stored_bytes": artifact_path.stat().st_size,
+                "artifact_digest": expected_digest,
+            }
+        return artifact, {
+            "state": "available",
+            "stored_bytes": artifact_path.stat().st_size,
+            "artifact_digest": actual_digest,
+        }
+
+    def delete_candidate_artifact(self, run_id: str) -> dict[str, Any]:
+        artifact, storage = self.candidate_artifact(run_id)
+        artifact_path = self._candidate_artifact_path(run_id)
+        reclaimed = artifact_path.stat().st_size if artifact_path.is_file() else 0
+        if artifact is not None or artifact_path.is_file():
+            artifact_path.unlink(missing_ok=True)
+        return {
+            "run_id": run_id,
+            "deleted": reclaimed > 0,
+            "reclaimed_bytes": reclaimed,
+            "artifact_digest": storage.get("artifact_digest"),
+        }
+
+    def candidate_storage_summary(self) -> dict[str, Any]:
+        rows = self._connection.execute(
+            "SELECT run_id,provider,model,payload_json FROM runs ORDER BY created_at DESC"
+        ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            summary = payload.get("candidate_diff_summary") or {}
+            retention = summary.get("retention") if isinstance(summary, dict) else None
+            if not isinstance(retention, dict) or not retention.get("captured"):
+                continue
+            _, storage = self.candidate_artifact(row["run_id"])
+            items.append({
+                "run_id": row["run_id"],
+                "provider": row["provider"],
+                "model": row["model"],
+                "changed_paths": list(summary.get("changed_paths") or []),
+                **storage,
+            })
+        return {
+            "total_bytes": sum(int(item.get("stored_bytes") or 0) for item in items),
+            "available_count": sum(item["state"] == "available" for item in items),
+            "deleted_count": sum(item["state"] == "deleted" for item in items),
+            "corrupt_count": sum(item["state"] == "corrupt" for item in items),
+            "items": items,
+        }
+
+    def delete_all_candidate_artifacts(self) -> dict[str, Any]:
+        summary = self.candidate_storage_summary()
+        deleted_count = 0
+        reclaimed_bytes = 0
+        for item in summary["items"]:
+            if item["state"] != "available":
+                continue
+            result = self.delete_candidate_artifact(item["run_id"])
+            if result["deleted"]:
+                deleted_count += 1
+                reclaimed_bytes += int(result["reclaimed_bytes"])
+        return {"deleted_count": deleted_count, "reclaimed_bytes": reclaimed_bytes}
+
+    def delete_run(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT batch_id,status FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            if row["status"] not in TERMINAL_RUN_STATUSES:
+                raise ActiveRunDeletionError("active episodes cannot be deleted")
+            batch_id = str(row["batch_id"])
+            run_directory = self._run_directory(run_id)
+            tombstone = self.runs_dir.resolve() / f".deleting-{run_id}-{uuid.uuid4().hex}"
+            moved = False
+            if run_directory.exists():
+                run_directory.rename(tombstone)
+                moved = True
+            try:
+                with self._connection:
+                    self._connection.execute(
+                        "DELETE FROM events WHERE scope_type='run' AND scope_id=?",
+                        (run_id,),
+                    )
+                    batch_events = self._connection.execute(
+                        "SELECT event_id,data_json FROM events WHERE scope_type='batch' AND scope_id=?",
+                        (batch_id,),
+                    ).fetchall()
+                    event_ids = []
+                    for event in batch_events:
+                        try:
+                            data = json.loads(event["data_json"])
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(data, dict) and data.get("run_id") == run_id:
+                            event_ids.append(int(event["event_id"]))
+                    if event_ids:
+                        placeholders = ",".join("?" for _ in event_ids)
+                        self._connection.execute(
+                            f"DELETE FROM events WHERE event_id IN ({placeholders})",
+                            tuple(event_ids),
+                        )
+                    self._connection.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
+                    remaining = int(self._connection.execute(
+                        "SELECT COUNT(*) FROM runs WHERE batch_id=?",
+                        (batch_id,),
+                    ).fetchone()[0])
+                    if remaining == 0:
+                        self._connection.execute(
+                            "DELETE FROM events WHERE scope_type='batch' AND scope_id=?",
+                            (batch_id,),
+                        )
+                        self._connection.execute("DELETE FROM batches WHERE batch_id=?", (batch_id,))
+                    else:
+                        self._connection.execute(
+                            "UPDATE batches SET updated_at=? WHERE batch_id=?",
+                            (utc_now(), batch_id),
+                        )
+            except Exception:
+                if moved and tombstone.exists() and not run_directory.exists():
+                    tombstone.rename(run_directory)
+                raise
+            if moved:
+                resolved_tombstone = tombstone.resolve()
+                if resolved_tombstone.parent != self.runs_dir.resolve():
+                    raise RuntimeError("run deletion escaped storage directory")
+                shutil.rmtree(resolved_tombstone)
+            return {"run_id": run_id, "batch_id": batch_id, "deleted": True}
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         row = self._connection.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()

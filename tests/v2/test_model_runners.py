@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 import socket
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +17,7 @@ from model_runners.anthropic import AnthropicAdapter
 from model_runners.configuration import RuntimeProviderSettings, configured, custom_headers_for, validate_provider_base_url
 from model_runners.errors import MalformedModelResponse, ModelRunnerError, ProviderConfigurationError, ProviderTimeout
 from model_runners.gemini import GeminiAdapter
-from model_runners.ollama_support import limitation_for_model, profile_for_model, public_support_catalog, support_for_model
+from model_runners.ollama_support import limitation_for_model, profile_for_model, public_support_catalog, support_for_model, supports_reasoning_effort
 from model_runners.openai_compatible import OpenAICompatibleAdapter
 from model_runners.protocol import ModelMessage, ModelRequestConfig, ModelResponse, ModelTool, ModelToolCall
 from model_runners.registry import ProviderRegistry
@@ -28,6 +30,7 @@ from model_runners.tool_conversion import (
     openai_tools,
     parse_json_arguments,
     parse_openai_tool_calls,
+    provider_tool_names,
 )
 from model_runners.usage import approximate_tokens, estimate_cost
 from training_adapters.protocol import ALLOWED_TOOLS
@@ -95,6 +98,32 @@ def test_session_replacement_is_atomic_and_drops_the_previous_key() -> None:
     assert settings.base_url_for("openai-compatible") == "https://api.openai.com/v1"
 
 
+def test_local_env_precedence_persistence_replacement_and_removal(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("# user setting\nUNRELATED=value\nANTHROPIC_API_KEY=old-local\n", encoding="utf-8")
+    settings = RuntimeProviderSettings(
+        {"ANTHROPIC_API_KEY": "process-secret"},
+        local_env_path=env_path,
+    )
+    assert settings.credential_source("anthropic") == "local_env"
+    assert settings.secret_for("anthropic") == "old-local"
+
+    settings.set_session_credential("anthropic", "session-secret")
+    assert settings.credential_source("anthropic") == "session"
+    settings.persist_local("anthropic", credential="replacement-local", update_credential=True)
+    assert settings.credential_source("anthropic") == "local_env"
+    assert settings.secret_for("anthropic") == "replacement-local"
+    contents = env_path.read_text(encoding="utf-8")
+    assert "old-local" not in contents
+    assert "session-secret" not in contents
+    assert "UNRELATED=value" in contents
+
+    assert settings.clear_local_credential("anthropic") is True
+    assert settings.credential_source("anthropic") == "environment"
+    assert settings.secret_for("anthropic") == "process-secret"
+    assert "replacement-local" not in env_path.read_text(encoding="utf-8")
+
+
 def test_concurrent_provider_updates_never_cross_credentials() -> None:
     settings = RuntimeProviderSettings({})
 
@@ -155,6 +184,35 @@ def test_provider_tool_conversions() -> None:
     assert len(gemini_tools(tools)[0]["functionDeclarations"]) == 12
 
 
+def test_provider_tool_names_are_safe_collision_resistant_and_reversible() -> None:
+    tools = [
+        ModelTool("release.status", "Dotted name.", {}),
+        ModelTool("release_status", "Existing safe name.", {}),
+        ModelTool("1 invalid tool", "Invalid start and characters.", {}),
+        ModelTool("x" * 80, "Overlong name.", {}),
+    ]
+    names = provider_tool_names(tools)
+
+    aliases = tuple(names.provider_name(tool.name) for tool in tools)
+    assert len(set(aliases)) == len(aliases)
+    assert names.provider_name("release_status") == "release_status"
+    assert names.provider_name("release.status") != "release_status"
+    assert all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", alias) for alias in aliases)
+    assert tuple(names.canonical_name(alias) for alias in aliases) == tuple(tool.name for tool in tools)
+
+
+def test_provider_tool_conversions_alias_the_real_environment_names() -> None:
+    tools = public_tools()
+    names = provider_tool_names(tools)
+    expected = {name.replace(".", "_") for name in ALLOWED_TOOLS}
+
+    assert {item["function"]["name"] for item in openai_tools(tools, names=names)} == expected
+    assert {item["name"] for item in anthropic_tools(tools, names=names)} == expected
+    assert {
+        item["name"] for item in gemini_tools(tools, names=names)[0]["functionDeclarations"]
+    } == expected
+
+
 def test_openai_message_conversion_preserves_tool_result() -> None:
     payload = openai_messages([ModelMessage("tool", "{}", tool_call_id="call-1", name="release.status")])
     assert payload == [{"role": "tool", "content": "{}", "tool_call_id": "call-1", "name": "release.status"}]
@@ -212,6 +270,39 @@ async def test_native_ollama_adapter_sets_context_and_preserves_thinking(monkeyp
     assert response.reasoning == "next private state"
     assert response.finish_reason == "tool_calls"
     assert response.reasoning_tokens > 0
+
+
+@pytest.mark.asyncio
+async def test_native_ollama_adapter_omits_thinking_for_llama31(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = OpenAICompatibleAdapter(provider="ollama")
+
+    def request(payload: dict, config: ModelRequestConfig) -> dict:
+        assert "think" not in payload
+        return {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "release.status", "arguments": {}}}],
+            },
+            "prompt_eval_count": 100,
+            "eval_count": 20,
+            "done_reason": "stop",
+        }
+
+    monkeypatch.setattr(adapter, "_request_ollama", request)
+    response = await adapter.complete(
+        messages=[ModelMessage("user", "Check status.")],
+        tools=public_tools(),
+        config=ModelRequestConfig(model="llama3.1:8b", reasoning_effort="low"),
+    )
+    assert response.tool_calls[0].name == "release.status"
+
+
+def test_ollama_reasoning_support_is_model_specific() -> None:
+    assert supports_reasoning_effort("qwen3:8b") is True
+    assert supports_reasoning_effort("gpt-oss:20b") is True
+    assert supports_reasoning_effort("llama3.1:8b") is False
+    assert supports_reasoning_effort("unlisted-local-model") is False
 
 
 def test_tool_call_parser_requires_object_arguments() -> None:
@@ -483,6 +574,49 @@ async def test_ollama_digest_change_invalidates_tool_probe(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
+async def test_model_discovery_and_tool_probe_cache_survive_restart_and_stay_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "provider-state.json"
+    settings = RuntimeProviderSettings({})
+    registry = ProviderRegistry(settings, state_path=state_path)
+    monkeypatch.setattr(
+        registry,
+        "_request_models",
+        lambda _: [{"id": "local-model", "display_name": "Local model", "digest": "digest-one"}],
+    )
+    await registry.discover_models("ollama")
+
+    class ProbeAdapter:
+        provider = "ollama"
+
+        async def complete(self, *, messages, tools, config):  # type: ignore[no-untyped-def]
+            return ModelResponse(
+                tool_calls=(ModelToolCall("probe", "frontier_probe", {"value": "frontier-probe"}),),
+                finish_reason="tool_calls",
+            )
+
+    registry._factories["ollama"] = ProbeAdapter
+    await registry.probe_tool_call("ollama", "local-model")
+    assert state_path.is_file()
+    assert "credential-secret" not in state_path.read_text(encoding="utf-8")
+
+    restarted_settings = RuntimeProviderSettings({})
+    restarted = ProviderRegistry(restarted_settings, state_path=state_path)
+    status = restarted.status("ollama")
+    assert status["models"][0]["id"] == "local-model"
+    assert status["models"][0]["tool_compatibility"]["state"] == "passed"
+    assert status["model_discovery"]["cached"] is True
+    assert "endpoint_binding" not in json.dumps(status)
+
+    restarted_settings.set_session_base_url("ollama", "http://127.0.0.1:11435/v1")
+    invalidated = restarted.models("ollama")[0]["tool_compatibility"]
+    assert invalidated["state"] == "not_tested"
+    assert invalidated["invalidated"] is True
+
+
+@pytest.mark.asyncio
 async def test_ollama_thinking_model_probe_disables_reasoning_before_tool_call() -> None:
     registry = ProviderRegistry(RuntimeProviderSettings({}))
 
@@ -554,13 +688,16 @@ def test_tool_probe_schema_rejects_unbounded_or_incoherent_options() -> None:
         ProviderToolProbeOptions(max_output_tokens=2_048, retry_output_tokens=512)
 
 
-def test_ollama_support_catalog_is_explicit_and_excludes_legacy_deepseek_template() -> None:
+def test_ollama_support_catalog_is_explicit_and_excludes_known_deepseek_templates() -> None:
     catalog = public_support_catalog()
     assert {item["id"] for item in catalog["items"]} >= {
         "qwen3", "deepseek-r1-0528-qwen3", "llama3.1", "llama3.2", "qwen2.5", "granite3.3"
     }
     assert support_for_model("qwen3:8b")["support"] == "locally_verified"
     assert profile_for_model("gpt-oss:20b")["thinking"] == "low"
+    current_deepseek = "deepseek-r1:8b"
+    assert support_for_model(current_deepseek) is None
+    assert limitation_for_model(current_deepseek)["code"] == "published_template_without_tool_definitions"
     legacy = "deepseek-r1:8b-llama-distill-q4_K_M"
     assert support_for_model(legacy) is None
     assert limitation_for_model(legacy)["code"] == "legacy_template_without_tool_definitions"
@@ -698,7 +835,7 @@ async def test_hosted_adapters_force_only_the_isolated_probe_tool(monkeypatch: p
         {"type": "object", "properties": {"value": {"type": "string"}}, "required": ["value"]},
     )
     config = ModelRequestConfig(
-        model="provider-model",
+        model="gpt-5.6-sol",
         max_output_tokens=512,
         required_tool="frontier_probe",
     )
@@ -707,23 +844,22 @@ async def test_hosted_adapters_force_only_the_isolated_probe_tool(monkeypatch: p
     openai = OpenAICompatibleAdapter()
 
     def openai_request(payload, request_config):  # type: ignore[no-untyped-def]
-        assert payload["tool_choice"] == {
-            "type": "function",
-            "function": {"name": "frontier_probe"},
-        }
+        assert payload["tool_choice"] == {"type": "function", "name": "frontier_probe"}
         assert "temperature" not in payload
-        assert "reasoning_effort" not in payload
+        assert payload["reasoning"] == {"context": "all_turns"}
+        assert payload["max_output_tokens"] == 512
+        assert payload["store"] is False
+        assert payload["parallel_tool_calls"] is False
         return ({
-            "choices": [{
-                "message": {"tool_calls": [{
-                    "id": "openai-probe",
-                    "function": {"name": "frontier_probe", "arguments": '{"value":"frontier-probe"}'},
-                }]},
-                "finish_reason": "tool_calls",
-            }]
+            "id": "openai-response",
+            "status": "completed",
+            "output": [{
+                "type": "function_call", "call_id": "openai-probe",
+                "name": "frontier_probe", "arguments": '{"value":"frontier-probe"}',
+            }],
         }, None)
 
-    monkeypatch.setattr(openai, "_request", openai_request)
+    monkeypatch.setattr(openai, "_request_responses", openai_request)
     openai_response = await openai.complete(messages=messages, tools=[tool], config=config)
     assert openai_response.tool_calls[0].name == "frontier_probe"
 
@@ -771,6 +907,288 @@ async def test_hosted_adapters_force_only_the_isolated_probe_tool(monkeypatch: p
     monkeypatch.setattr(gemini, "_request", gemini_request)
     gemini_response = await gemini.complete(messages=messages, tools=[tool], config=config)
     assert gemini_response.tool_calls[0].name == "frontier_probe"
+
+
+@pytest.mark.asyncio
+async def test_openai_current_models_use_safe_tools_and_current_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = OpenAICompatibleAdapter()
+    messages = [
+        ModelMessage(
+            "assistant",
+            tool_calls=(ModelToolCall("prior-call", "release.status", {}),),
+        ),
+        ModelMessage("tool", "{}", tool_call_id="prior-call", name="release.status"),
+    ]
+
+    def request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["max_output_tokens"] == 2048
+        assert "temperature" not in payload
+        assert payload["reasoning"] == {"context": "all_turns", "effort": "low"}
+        assert payload["tool_choice"] == {"type": "function", "name": "release_status"}
+        assert payload["input"][0] == {
+            "type": "function_call", "call_id": "prior-call",
+            "name": "release_status", "arguments": "{}",
+        }
+        assert payload["input"][1] == {
+            "type": "function_call_output", "call_id": "prior-call", "output": "{}",
+        }
+        assert {item["name"] for item in payload["tools"]} == {
+            name.replace(".", "_") for name in ALLOWED_TOOLS
+        }
+        assert all(item["strict"] is False for item in payload["tools"])
+        assert payload["store"] is False
+        return ({
+            "id": "openai-current",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning", "id": "reasoning-next",
+                    "encrypted_content": "opaque-provider-continuation", "summary": [],
+                },
+                {
+                    "type": "function_call", "call_id": "next-call",
+                    "name": "workspace_read", "arguments": '{"path":"service/flow.py"}',
+                },
+            ],
+            "usage": {
+                "input_tokens": 20, "output_tokens": 6,
+                "input_tokens_details": {"cached_tokens": 3},
+                "output_tokens_details": {"reasoning_tokens": 2},
+            },
+        }, None)
+
+    monkeypatch.setattr(adapter, "_request_responses", request)
+    response = await adapter.complete(
+        messages=messages,
+        tools=public_tools(),
+        config=ModelRequestConfig(
+            model="gpt-5.6-sol",
+            temperature=0,
+            reasoning_effort="low",
+            max_output_tokens=2048,
+            required_tool="release.status",
+        ),
+    )
+    assert response.tool_calls == (
+        ModelToolCall("next-call", "workspace.read", {"path": "service/flow.py"}),
+    )
+    assert (response.input_tokens, response.output_tokens, response.cached_tokens, response.reasoning_tokens) == (20, 6, 3, 2)
+    replay = adapter._responses_input(
+        [
+            ModelMessage("assistant", tool_calls=response.tool_calls, reasoning=response.reasoning),
+            ModelMessage("tool", "{}", tool_call_id="next-call", name="workspace.read"),
+        ],
+        provider_tool_names(public_tools()),
+    )
+    assert replay[0] == {
+        "type": "reasoning", "id": "reasoning-next",
+        "encrypted_content": "opaque-provider-continuation", "summary": [],
+    }
+    assert replay[1]["type"] == "function_call"
+    assert replay[2] == {"type": "function_call_output", "call_id": "next-call", "output": "{}"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_full_episode_tools_are_aliased_and_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AnthropicAdapter()
+    messages = [
+        ModelMessage(
+            "assistant",
+            tool_calls=(ModelToolCall("prior-call", "release.status", {}),),
+        ),
+        ModelMessage("tool", "{}", tool_call_id="prior-call", name="release.status"),
+    ]
+
+    def request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["tool_choice"] == {"type": "tool", "name": "release_status"}
+        assert payload["messages"][0]["content"][0]["name"] == "release_status"
+        assert {item["name"] for item in payload["tools"]} == {
+            name.replace(".", "_") for name in ALLOWED_TOOLS
+        }
+        return {
+            "id": "anthropic-current",
+            "content": [{
+                "type": "tool_use",
+                "id": "next-call",
+                "name": "workspace_read",
+                "input": {"path": "service/flow.py"},
+            }],
+            "stop_reason": "tool_use",
+        }
+
+    monkeypatch.setattr(adapter, "_request", request)
+    response = await adapter.complete(
+        messages=messages,
+        tools=public_tools(),
+        config=ModelRequestConfig(
+            model="claude-fable-5",
+            max_output_tokens=2048,
+            required_tool="release.status",
+        ),
+    )
+    assert response.tool_calls == (
+        ModelToolCall("next-call", "workspace.read", {"path": "service/flow.py"}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_anthropic_fable_uses_native_adaptive_tool_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AnthropicAdapter()
+    payloads: list[dict[str, object]] = []
+
+    def request(payload, request_config):  # type: ignore[no-untyped-def]
+        payloads.append(payload)
+        if len(payloads) == 1:
+            assert payload["tool_choice"] == {
+                "type": "auto",
+                "disable_parallel_tool_use": True,
+            }
+            assert "temperature" not in payload
+            return {
+                "id": "anthropic-first",
+                "content": [
+                    {"type": "thinking", "thinking": "", "signature": "signed-private-state"},
+                    {"type": "tool_use", "id": "call-status", "name": "release_status", "input": {}},
+                    {
+                        "type": "tool_use",
+                        "id": "call-read",
+                        "name": "workspace_read",
+                        "input": {"path": "service/flow.py"},
+                    },
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 20, "output_tokens": 8},
+            }
+        assistant = payload["messages"][1]
+        assert assistant["content"][0] == {
+            "type": "thinking",
+            "thinking": "",
+            "signature": "signed-private-state",
+        }
+        assert [block["name"] for block in assistant["content"][1:]] == [
+            "release_status",
+            "workspace_read",
+        ]
+        assert payload["messages"][2] == {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call-status", "content": "{}"},
+                {"type": "tool_result", "tool_use_id": "call-read", "content": "{\"content\":\"...\"}"},
+            ],
+        }
+        return {
+            "id": "anthropic-second",
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 40, "output_tokens": 2},
+        }
+
+    monkeypatch.setattr(adapter, "_request", request)
+    config = ModelRequestConfig(
+        model="claude-fable-5",
+        temperature=0,
+        deterministic=True,
+        max_output_tokens=2048,
+    )
+    initial = [ModelMessage("user", "Inspect the incident.")]
+    first = await adapter.complete(messages=initial, tools=public_tools(), config=config)
+    assert first.tool_calls == (
+        ModelToolCall("call-status", "release.status", {}),
+        ModelToolCall("call-read", "workspace.read", {"path": "service/flow.py"}),
+    )
+    assert "signed-private-state" in first.reasoning
+    second = await adapter.complete(
+        messages=[
+            *initial,
+            ModelMessage("assistant", tool_calls=first.tool_calls, reasoning=first.reasoning),
+            ModelMessage("tool", "{}", tool_call_id="call-status", name="release.status"),
+            ModelMessage(
+                "tool",
+                "{\"content\":\"...\"}",
+                tool_call_id="call-read",
+                name="workspace.read",
+            ),
+        ],
+        tools=public_tools(),
+        config=config,
+    )
+    assert second.text == "done"
+    assert second.reasoning == ""
+
+
+def test_anthropic_http_error_is_classified_without_provider_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_text = "authorization: Bearer must-not-leak"
+    error = urllib.error.HTTPError(
+        "https://api.anthropic.com/v1/messages",
+        400,
+        "bad request",
+        {},
+        io.BytesIO(json.dumps({
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": secret_text},
+        }).encode()),
+    )
+
+    def rejected(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise error
+
+    monkeypatch.setattr("model_runners.anthropic.urllib.request.urlopen", rejected)
+    adapter = AnthropicAdapter(
+        settings=RuntimeProviderSettings({"ANTHROPIC_API_KEY": "test-key"})
+    )
+    with pytest.raises(ModelRunnerError) as exc_info:
+        adapter._request({}, ModelRequestConfig(model="claude-fable-5", max_retries=0))
+    assert exc_info.value.code == "provider_request_incompatible"
+    assert secret_text not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_gemini_full_episode_tools_are_aliased_and_restored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = GeminiAdapter()
+
+    def request(payload, request_config):  # type: ignore[no-untyped-def]
+        assert payload["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"] == [
+            "release_status"
+        ]
+        assert {item["name"] for item in payload["tools"][0]["functionDeclarations"]} == {
+            name.replace(".", "_") for name in ALLOWED_TOOLS
+        }
+        return {
+            "responseId": "gemini-current",
+            "candidates": [{
+                "content": {"parts": [{
+                    "functionCall": {
+                        "name": "workspace_read",
+                        "args": {"path": "service/flow.py"},
+                    }
+                }]},
+                "finishReason": "STOP",
+            }],
+        }
+
+    monkeypatch.setattr(adapter, "_request", request)
+    response = await adapter.complete(
+        messages=[ModelMessage("user", "Inspect the workspace.")],
+        tools=public_tools(),
+        config=ModelRequestConfig(
+            model="gemini-tool-model",
+            max_output_tokens=2048,
+            required_tool="release.status",
+        ),
+    )
+    assert response.tool_calls == (
+        ModelToolCall("gemini-0", "workspace.read", {"path": "service/flow.py"}),
+    )
 
 
 @pytest.mark.asyncio
@@ -832,15 +1250,29 @@ async def test_openai_adapter_response_conversion(monkeypatch: pytest.MonkeyPatc
 
 
 def test_prompt_is_versioned_and_does_not_name_privileged_details() -> None:
-    assert PROMPT_VERSION == "frontier-incident-agent-v2.5"
+    assert PROMPT_VERSION == "frontier-incident-agent-v2.7"
     lowered = SYSTEM_PROMPT.lower()
     for forbidden in ("member a", "member b", "profile derivation", "strict verifier predicate", "gold repair"):
         assert forbidden not in lowered
     assert "twelve tools" in lowered
     assert "investigate" in lowered
+    assert "telemetry.logs returns a trace-only handle" in lowered
+    assert "diag-s2 + s2.exit" in lowered
     assert "correct the next call" in lowered
     assert "public incident ticket" in lowered
     assert "attempt_budget in settings.toml matches" not in lowered
     restore = next(tool for tool in public_tools() if tool.name == "recovery.restore")
     assert restore.input_schema["properties"]["snapshot_id"]["default"] == "S0"
     assert "not an integrity root digest" in restore.input_schema["properties"]["snapshot_id"]["description"]
+
+
+def test_public_diagnostic_tool_contract_matches_runtime() -> None:
+    tools = {tool.name: tool for tool in public_tools()}
+    runtime_properties = tools["runtime.run"].input_schema["properties"]
+    assert runtime_properties["workload_id"]["enum"] == [
+        "P1", "P2", "P3", "diag-s2", "diag-s5",
+    ]
+    assert runtime_properties["cutpoint"]["enum"] == ["s2.exit", "s5.exit"]
+    state_properties = tools["state.inspect"].input_schema["properties"]
+    assert "telemetry.logs handle is trace-only" in state_properties["source"]["description"]
+    assert "diagnostic runtime.run" in state_properties["source"]["description"]

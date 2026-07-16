@@ -11,7 +11,16 @@ import { MotionButton, SharedSelectionIndicator } from "@/components/motion";
 import { ErrorState, InlineLoading, LoadingState, PageHeader, ProviderBadge } from "@/components/ui";
 
 const RECENT_MODELS_KEY = "frontier-recent-models";
+const ANTHROPIC_MANAGED_SAMPLING_PREFIXES = [
+  "claude-fable-5",
+  "claude-mythos-5",
+  "claude-mythos-preview",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-sonnet-5",
+];
 type ProviderResult = { provider: Provider };
+type EvaluationPresetSelection = EvaluationPresetId | "custom";
 
 export default function NewEvaluationPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -19,6 +28,7 @@ export default function NewEvaluationPage() {
   const [model, setModel] = useState("scripted-valid");
   const [modelSearch, setModelSearch] = useState("");
   const [recentModels, setRecentModels] = useState<string[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<EvaluationPresetSelection>("custom");
   const [modelDiscoveryBusy, setModelDiscoveryBusy] = useState<Record<string, boolean>>({});
   const [modelMessages, setModelMessages] = useState<Record<string, string>>({});
   const [split, setSplit] = useState("eval");
@@ -55,6 +65,14 @@ export default function NewEvaluationPage() {
   const episodeCount = seedCount * attempts;
   const models = provider?.models ?? [];
   const selectedModel = models.find(item => item.id === model);
+  const providerManagedSampling = providerName === "anthropic"
+    && ANTHROPIC_MANAGED_SAMPLING_PREFIXES.some(prefix => model.toLowerCase().startsWith(prefix));
+  const temperatureSupported = Boolean(provider?.capabilities.temperature && !providerManagedSampling);
+  const deterministicSupported = Boolean(provider?.capabilities.deterministic && !providerManagedSampling);
+  const reasoningEffortSupported = Boolean(
+    provider?.capabilities.reasoning_effort
+    && (providerName !== "ollama" || selectedModel?.inference_capabilities?.reasoning_effort),
+  );
   const toolCompatibilityFailed = selectedModel?.tool_compatibility?.state === "failed";
   const ollamaToolTestRequired = providerName === "ollama" && Boolean(selectedModel) && selectedModel?.tool_compatibility?.state !== "passed";
   const toolCompatibilityBlocked = toolCompatibilityFailed || ollamaToolTestRequired;
@@ -63,6 +81,15 @@ export default function NewEvaluationPage() {
 
   function replaceProvider(next: Provider) {
     setProviders(current => current.map(item => item.provider === next.provider ? next : item));
+  }
+
+  function markCustom() {
+    setSelectedPreset("custom");
+  }
+
+  function chooseModel(value: string) {
+    if (value !== model) markCustom();
+    setModel(value);
   }
 
   async function discoverModels(value: string) {
@@ -87,6 +114,7 @@ export default function NewEvaluationPage() {
   }
 
   function changeProvider(value: string) {
+    if (value !== providerName) markCustom();
     setProviderName(value);
     const next = providers.find(item => item.provider === value);
     setModel(next?.models[0]?.id ?? "");
@@ -119,7 +147,7 @@ export default function NewEvaluationPage() {
 
   function scriptedShortcut() {
     changeProvider("scripted");
-    setModel("scripted-valid");
+    chooseModel("scripted-valid");
     window.requestAnimationFrame(() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
   }
 
@@ -144,6 +172,7 @@ export default function NewEvaluationPage() {
     setDeterministic(values.deterministic);
     setConfirmed(false);
     setError("");
+    setSelectedPreset(id);
   }
 
   async function submit(event: FormEvent) {
@@ -158,12 +187,12 @@ export default function NewEvaluationPage() {
         provider: providerName, model, split, seed_start: seedStart, seed_count: seedCount,
         attempts, concurrency,
         model_configuration: {
-          temperature: provider.capabilities.temperature ? temperature : null,
+          temperature: temperatureSupported ? temperature : null,
           max_output_tokens: maxTokens,
           context_window: providerName === "ollama" ? contextWindow : null,
-          reasoning_effort: provider.capabilities.reasoning_effort ? reasoning : null,
+          reasoning_effort: reasoningEffortSupported ? reasoning : null,
           timeout_seconds: timeout, max_retries: retries,
-          deterministic: provider.capabilities.deterministic ? deterministic : false,
+          deterministic: deterministicSupported ? deterministic : false,
         },
         limits: {
           max_steps: maxSteps, max_model_calls: maxCalls,
@@ -204,28 +233,35 @@ export default function NewEvaluationPage() {
             <div className="model-picker">
               <div className="model-picker-head"><div><span className="field-title">Model</span><small>{providerName === "ollama" ? "Detect and select a model installed in your local Ollama library." : "Choose a provider model below or enter a supported model identifier."}</small></div>{models.length > 1 && <label className="search-field"><span className="sr-only">Search models</span><Search size={15} aria-hidden="true" /><input type="search" value={modelSearch} onChange={event => setModelSearch(event.target.value)} placeholder="Search models" /></label>}</div>
               {providerName === "ollama" && <div className="model-discovery-bar"><div><strong>Local model detection</strong><span>Reads Ollama&apos;s local model inventory; no download is started.</span></div><MotionButton type="button" className="button secondary" disabled={modelDiscoveryBusy.ollama} onClick={() => void discoverModels("ollama")}>{modelDiscoveryBusy.ollama ? <InlineLoading label="Detecting models" /> : <><RefreshCw size={15} aria-hidden="true" />{models.length ? "Refresh installed models" : "Detect installed models"}</>}</MotionButton></div>}
-              {provider?.capabilities.custom_model && <label>Model identifier<input required readOnly={providerName === "ollama"} value={model} pattern="[A-Za-z0-9._:/-]+" onChange={event => setModel(event.target.value)} placeholder={providerName === "ollama" ? "Detect and select an installed model" : "provider/model-name"} /></label>}
+              {provider?.capabilities.custom_model && <label>Model identifier<input required readOnly={providerName === "ollama"} value={model} pattern="[A-Za-z0-9._:/-]+" onChange={event => chooseModel(event.target.value)} placeholder={providerName === "ollama" ? "Detect and select an installed model" : "provider/model-name"} /></label>}
               {modelMessages[providerName] && <p className="model-discovery-message" role="status">{modelMessages[providerName]}</p>}
               {modelDiscoveryBusy[providerName] && providerName !== "ollama" && <InlineLoading label="Loading available models" />}
-              {recentForProvider.length > 0 && <div className="recent-models"><span>Recent</span>{recentForProvider.map(id => <MotionButton type="button" className="model-chip" key={id} onClick={() => setModel(id)}>{id}</MotionButton>)}</div>}
-              {models.length > 0 && <div className="model-option-label"><span>{providerName === "ollama" ? "Installed locally" : providerName === "scripted" ? "Built-in models" : "Available from provider"}</span><small>Choose an option to fill the model identifier.</small></div>}
-              {models.length > 0 && <div className="model-option-grid" role="radiogroup" aria-label="Evaluation model">{filteredModels.map((item, index) => <MotionButton type="button" role="radio" aria-checked={model === item.id} tabIndex={model === item.id || (!model && index === 0) ? 0 : -1} className={model === item.id ? "model-option selected" : "model-option"} key={item.id} onClick={() => setModel(item.id)} onKeyDown={event => moveRadio(event, filteredModels.map(option => option.id), model, setModel)}>{model === item.id && <Check size={15} aria-hidden="true" />}<span><strong>{item.display_name}</strong><code>{item.id}</code></span>{item.tool_compatibility?.state === "passed" && <small className="success">Tool tested</small>}{item.tool_compatibility?.state === "failed" && <small className="danger">Tool test failed</small>}</MotionButton>)}</div>}
+              {recentForProvider.length > 0 && <div className="recent-models"><span>Recent</span>{recentForProvider.map(id => <MotionButton type="button" className="model-chip" key={id} onClick={() => chooseModel(id)}>{id}</MotionButton>)}</div>}
+              {models.length > 0 && <div className="model-option-label"><span>{providerName === "ollama" ? "Installed locally" : providerName === "scripted" ? "Built-in models" : "Available from provider"}</span><small>{filteredModels.length} of {models.length} · choose to fill the identifier</small></div>}
+              {models.length > 0 && <div className="model-option-grid" role="radiogroup" aria-label="Evaluation model">{filteredModels.map((item, index) => <MotionButton type="button" role="radio" aria-checked={model === item.id} tabIndex={model === item.id || (!model && index === 0) ? 0 : -1} className={model === item.id ? "model-option selected" : "model-option"} key={item.id} onClick={() => chooseModel(item.id)} onKeyDown={event => moveRadio(event, filteredModels.map(option => option.id), model, chooseModel)}>{model === item.id && <Check size={15} aria-hidden="true" />}<span><strong>{item.display_name}</strong><code>{item.id}</code></span>{item.tool_compatibility?.state === "passed" && <small className="success">Tool tested</small>}{item.tool_compatibility?.state === "failed" && <small className="danger">Tool test failed</small>}</MotionButton>)}</div>}
               {toolCompatibilityFailed && <p className="model-compatibility-warning" role="alert">This model did not produce a valid structured tool call. Retest it in Settings after a model update, or choose a model marked Tool tested.</p>}
               {ollamaToolTestRequired && !toolCompatibilityFailed && <p className="model-compatibility-warning warning" role="status">Run this installed model&apos;s tool compatibility test in Settings before evaluation.</p>}
               {!models.length && !modelDiscoveryBusy[providerName] && providerName !== "ollama" && provider?.capabilities.custom_model && <p className="muted">{provider.configured ? "The live catalog is not loaded. Use Settings to test the provider, or enter a model identifier manually." : "Add an API key in Settings to load the provider model catalog."}</p>}
               {models.length > 0 && !filteredModels.length && <p className="no-results">No models match “{modelSearch}”.</p>}
-              {provider && <div className="capability-list" aria-label="Selected provider capabilities"><span className={provider.capabilities.temperature ? "available" : "unavailable"}>Temperature</span><span className={provider.capabilities.reasoning_effort ? "available" : "unavailable"}>Reasoning effort</span><span className={provider.capabilities.deterministic ? "available" : "unavailable"}>Deterministic mode</span><span className={provider.capabilities.tool_probe ? "available" : "unavailable"}>Tool probe</span></div>}
+              {provider && <div className="capability-list" aria-label="Selected provider capabilities"><span className={temperatureSupported ? "available" : "unavailable"}>Temperature</span><span className={reasoningEffortSupported ? "available" : "unavailable"}>Reasoning effort</span><span className={deterministicSupported ? "available" : "unavailable"}>Deterministic mode</span><span className={provider.capabilities.tool_probe ? "available" : "unavailable"}>Tool probe</span></div>}
             </div>
           </fieldset>
 
-          <fieldset><legend><span>02</span> Environment and seeds</legend>
+          <fieldset onChangeCapture={markCustom}><legend><span>02</span> Environment and seeds</legend>
             <section className="evaluation-presets" aria-labelledby="recommended-settings-title">
               <div className="evaluation-presets-head"><div><span className="field-title" id="recommended-settings-title">Recommended settings</span><small>Apply a starting point, then adjust any field before launch.</small></div><span>{providerName === "ollama" ? "Optimized for local inference" : "Matched to the selected provider"}</span></div>
-              <div className="evaluation-preset-grid">
-                {EVALUATION_PRESETS.map(preset => <MotionButton type="button" className="evaluation-preset" key={preset.id} onClick={() => applyPreset(preset.id)} aria-label={`Apply ${preset.label} preset`}>
-                  <span><strong>{preset.label}</strong><small>{preset.episodeSummary}</small></span>
-                  <p>{preset.description}</p>
-                </MotionButton>)}
+              <div className="evaluation-preset-grid" role="group" aria-label="Recommended settings">
+                {EVALUATION_PRESETS.map(preset => {
+                  const selected = selectedPreset === preset.id;
+                  return <MotionButton type="button" className={`evaluation-preset${selected ? " selected" : ""}`} key={preset.id} onClick={() => applyPreset(preset.id)} aria-label={`Apply ${preset.label} preset`} aria-pressed={selected}>
+                    <span><strong>{selected && <Check size={14} aria-hidden="true" />}{preset.label}</strong><small>{preset.episodeSummary}</small></span>
+                    <p>{preset.description}</p>
+                  </MotionButton>;
+                })}
+                <MotionButton type="button" className={`evaluation-preset${selectedPreset === "custom" ? " selected" : ""}`} onClick={markCustom} aria-label="Use Custom settings" aria-pressed={selectedPreset === "custom"}>
+                  <span><strong>{selectedPreset === "custom" && <Check size={14} aria-hidden="true" />}Custom</strong><small>Manual</small></span>
+                  <p>Keep the current values and tune any evaluation parameter yourself.</p>
+                </MotionButton>
               </div>
             </section>
             <div className="field-grid four">
@@ -235,9 +271,9 @@ export default function NewEvaluationPage() {
             <label>Attempts per seed<input type="number" min="1" max="20" value={attempts} onChange={event => setAttempts(event.target.valueAsNumber)} /></label>
           </div><div className="section-helper"><ShieldCheck size={16} aria-hidden="true" /><span>Each episode uses the existing environment and immutable strict verifier. Seeds change public instances, not scoring authority.</span></div></fieldset>
 
-          <fieldset><legend><span>03</span> Limits, concurrency and budgets</legend>
+          <fieldset onChangeCapture={markCustom}><legend><span>03</span> Limits, concurrency and budgets</legend>
             <div className="form-subsection"><h2>Execution</h2><div className="field-grid four"><label>Concurrency<input type="number" min="1" max="8" value={concurrency} onChange={event => setConcurrency(event.target.valueAsNumber)} /><small>Defaults conservatively to one.</small></label><label>Environment steps<input type="number" min="1" max="256" value={maxSteps} onChange={event => setMaxSteps(event.target.valueAsNumber)} /></label><label>Model calls<input type="number" min="1" max="256" value={maxCalls} onChange={event => setMaxCalls(event.target.valueAsNumber)} /></label><label>Wall clock (s)<input type="number" min="1" value={wallClock} onChange={event => setWallClock(event.target.valueAsNumber)} /></label></div></div>
-            <div className="form-subsection"><h2>Provider request</h2><div className="field-grid four">{provider?.capabilities.temperature && <label>Temperature<input type="number" min="0" max="2" step="0.1" value={temperature} onChange={event => setTemperature(event.target.valueAsNumber)} /></label>}<label>Maximum output tokens<input type="number" min="1" value={maxTokens} onChange={event => setMaxTokens(event.target.valueAsNumber)} /></label>{providerName === "ollama" && <label>Context window<input type="number" min="4096" max="262144" step="4096" value={contextWindow} onChange={event => setContextWindow(event.target.valueAsNumber)} /><small>16K is the recommended starting point for an 8 GB GPU.</small></label>}{provider?.capabilities.reasoning_effort && <label>Reasoning effort<select value={reasoning} onChange={event => setReasoning(event.target.value)}><option>low</option><option>medium</option><option>high</option></select></label>}<label>Provider timeout (s)<input type="number" min="1" max="900" value={timeout} onChange={event => setTimeoutValue(event.target.valueAsNumber)} /></label><label>Maximum retries<input type="number" min="0" max="10" value={retries} onChange={event => setRetries(event.target.valueAsNumber)} /></label>{provider?.capabilities.deterministic && <label className="check-field"><input type="checkbox" checked={deterministic} onChange={event => setDeterministic(event.target.checked)} />Deterministic mode</label>}</div></div>
+            <div className="form-subsection"><h2>Provider request</h2><div className="field-grid four">{temperatureSupported && <label>Temperature<input type="number" min="0" max="2" step="0.1" value={temperature} onChange={event => setTemperature(event.target.valueAsNumber)} /></label>}<label>Maximum output tokens<input type="number" min="1" value={maxTokens} onChange={event => setMaxTokens(event.target.valueAsNumber)} /></label>{providerName === "ollama" && <label>Context window<input type="number" min="4096" max="262144" step="4096" value={contextWindow} onChange={event => setContextWindow(event.target.valueAsNumber)} /><small>16K is the recommended starting point for an 8 GB GPU.</small></label>}{reasoningEffortSupported && <label>Reasoning effort<select value={reasoning} onChange={event => setReasoning(event.target.value)}><option>low</option><option>medium</option><option>high</option></select></label>}<label>Provider timeout (s)<input type="number" min="1" max="900" value={timeout} onChange={event => setTimeoutValue(event.target.valueAsNumber)} /></label><label>Maximum retries<input type="number" min="0" max="10" value={retries} onChange={event => setRetries(event.target.valueAsNumber)} /></label>{deterministicSupported && <label className="check-field"><input type="checkbox" checked={deterministic} onChange={event => setDeterministic(event.target.checked)} />Deterministic mode</label>}</div>{providerManagedSampling && <p className="muted">Anthropic manages sampling and adaptive thinking for this model. Temperature and deterministic sampling controls are omitted from the request.</p>}{providerName === "ollama" && selectedModel && !reasoningEffortSupported && <p className="muted">This model does not support Ollama thinking control. Frontier omits reasoning effort from its requests.</p>}</div>
             <div className="form-subsection"><h2>Optional ceilings</h2><div className="field-grid"><label>Token budget <small>per direction</small><input type="number" min="1" value={tokenBudget} onChange={event => setTokenBudget(event.target.value)} placeholder="No limit" /></label><label>Cost budget (USD)<input type="number" min="0" step="0.01" value={costBudget} onChange={event => setCostBudget(event.target.value)} placeholder="No limit" /></label></div></div>
           </fieldset>
         </div>

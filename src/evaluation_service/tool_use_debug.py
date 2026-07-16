@@ -121,13 +121,13 @@ _ERROR_PATTERNS: tuple[tuple[str, str, str, str], ...] = (
         "invalid_trace_capability",
         "diagnostic_invalid_trace_capability",
         "state.inspect/telemetry.trace used an invalid or empty capability/selector",
-        "source must be 'public' or a handle returned by telemetry.logs/runtime.run. Do not pass integrity digests/roots as source. Provide a non-empty selector allowed by that handle.",
+        "A telemetry.logs handle is trace-only. Use it with telemetry.trace. For state.inspect journal/effects/keys, use a diagnostic runtime.run handle and a selector returned by its trace; source='public' supports only progress/recovery.",
     ),
     (
         "invalid trace capability",
         "diagnostic_invalid_trace_capability",
         "state.inspect/telemetry.trace used an invalid or empty capability/selector",
-        "source must be 'public' or a handle returned by telemetry.logs/runtime.run. Do not pass integrity digests/roots as source. Provide a non-empty selector allowed by that handle.",
+        "A telemetry.logs handle is trace-only. Use it with telemetry.trace. For state.inspect journal/effects/keys, use a diagnostic runtime.run handle and a selector returned by its trace; source='public' supports only progress/recovery.",
     ),
     (
         "selector is empty",
@@ -180,6 +180,13 @@ def _classify_error(message: str, *, tool: str | None = None, arguments: dict[st
     args = arguments or {}
     tool_name = tool or ""
 
+    if tool_name == "runtime.run" and "unknown workload or missing cutpoint" in message.lower():
+        return (
+            "diagnostic_invalid_workload_or_cutpoint",
+            "runtime.run used an incomplete or mismatched diagnostic pair",
+            "Use diag-s2 with s2.exit or diag-s5 with s5.exit. Use P1/P2/P3 without a cutpoint.",
+        )
+
     if tool_name == "runtime.run" and (
         "active workspace configuration invalid" in message.lower()
         or "tool_execution_failed" in message.lower()
@@ -202,6 +209,18 @@ def _classify_error(message: str, *, tool: str | None = None, arguments: dict[st
     if tool_name == "state.inspect":
         source = args.get("source")
         selector = args.get("selector")
+        if "trace capability view not allowed" in message.lower():
+            return (
+                "diagnostic_handle_view_not_allowed",
+                "state.inspect used a handle that does not authorize the requested view",
+                "telemetry.logs handles authorize telemetry.trace only. Use a diagnostic runtime.run handle for journal/effects/keys, with a selector returned by telemetry.trace.",
+            )
+        if source == "public" and "public stream not supported for this view" in message.lower():
+            return (
+                "diagnostic_public_view_not_supported",
+                "state.inspect requested a private state view from the public source",
+                "source='public' supports only progress with stream=settlement or recovery with snapshot_id=S0. Use a diagnostic runtime.run handle for journal/effects/keys.",
+            )
         if _looks_like_digest(source):
             return (
                 "diagnostic_digest_as_trace_source",

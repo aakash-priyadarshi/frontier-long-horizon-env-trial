@@ -13,7 +13,11 @@ Default origin: `http://localhost:8000`. OpenAPI is at `/docs`.
 | POST | `/api/evaluations/{batch_id}/cancel` | cooperative cancellation |
 | GET | `/api/evaluations/{batch_id}/events` | ordered replayable SSE |
 | GET | `/api/runs/{run_id}` | immutable episode result and timeline |
+| DELETE | `/api/runs/{run_id}` | explicitly delete a terminal local episode and its artifacts |
+| DELETE | `/api/runs/{run_id}/candidate-diff` | reclaim the retained diff while preserving the score record |
 | GET | `/api/runs/{run_id}/events` | run-scoped SSE |
+| GET | `/api/storage/candidate-diffs` | candidate-artifact usage and per-run storage state |
+| DELETE | `/api/storage/candidate-diffs` | delete every retained candidate diff without deleting scores |
 | GET | `/api/comparisons?batch=…` | compatible comparison metrics/warnings |
 | GET | `/api/exports/{batch_id}.json` | sanitized versioned JSON export |
 
@@ -24,7 +28,9 @@ default). The service streams changes rather than requiring aggressive polling.
 Errors use `{"error":{"code":"…","message":"…"}}`; validation can add a bounded
 `details` array. Raw exceptions, tracebacks, credentials, arbitrary paths, and
 command execution are never part of the API. CORS allows only the configured local
-dashboard origins and only GET/POST/OPTIONS.
+dashboard origins and only GET/POST/DELETE/OPTIONS. Destructive requests additionally
+require a loopback Host and an approved dashboard Origin. Active episodes cannot be
+deleted.
 
 The create schema covers provider/model, split, seed range, attempts, concurrency,
 model controls, model-call/environment-step limits, token/cost limits, timeout, and

@@ -49,6 +49,17 @@ class EvaluationOrchestrator:
             raise ValueError("selected model failed the required tool compatibility test")
         if request.provider == "ollama" and selected_model and tool_state != "passed":
             raise ValueError("selected Ollama model must pass the current tool compatibility test")
+        if (
+            request.provider == "ollama"
+            and selected_model
+            and not selected_model.get("inference_capabilities", {}).get("reasoning_effort", False)
+            and request.model_configuration.reasoning_effort is not None
+        ):
+            request = request.model_copy(update={
+                "model_configuration": request.model_configuration.model_copy(
+                    update={"reasoning_effort": None},
+                ),
+            })
         batch_id = "batch_" + uuid.uuid4().hex
         environment_commit = _git_sha("main")
         application_commit = _git_sha("HEAD")
@@ -108,7 +119,12 @@ class EvaluationOrchestrator:
                     cancelled=cancellation, emit=emit,
                 )
                 outcome = await episode.run()
-                digest = self.store.finalize_run(run["run_id"], outcome.status, outcome.payload)
+                digest = self.store.finalize_run(
+                    run["run_id"],
+                    outcome.status,
+                    outcome.payload,
+                    candidate_artifact=outcome.candidate_artifact,
+                )
                 await emit("run_finished", {"status": outcome.status, "record_digest": digest, "authoritative_reward": outcome.payload.get("authoritative_reward"), "authoritative_verdict": outcome.payload.get("authoritative_verdict")})
 
         runs, _ = self.store.list_runs(batch_id=batch_id, limit=10_000)

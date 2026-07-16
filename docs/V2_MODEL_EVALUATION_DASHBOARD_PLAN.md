@@ -60,8 +60,8 @@ Provider support is planned behind the adapter interface, for example:
   engineering checks only; never confused with submission scoring authority).
 - Hosted chat/completion providers selected at run configuration time.
 
-Provider credentials stay outside the repository and outside agent-visible
-runtime metadata. Provider choice must not alter verifier predicates.
+Provider credentials stay outside tracked repository content and outside
+agent-visible runtime metadata. Provider choice must not alter verifier predicates.
 
 ## Immutable evaluation-run records
 

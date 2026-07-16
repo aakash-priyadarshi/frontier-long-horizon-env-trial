@@ -12,6 +12,7 @@ Next.js dashboard
       -> EnvironmentProtocol.grade
         -> existing strict verifier (sole scoring authority)
       -> immutable SQLite result + canonical SHA-256 digest
+      -> bounded sanitized candidate diff + digest manifest
     -> sanitized API, SSE, comparison, and export views
 ```
 
@@ -43,5 +44,15 @@ records found after API restart become terminal `interrupted` records; uncertain
 provider requests are never automatically resumed.
 
 Terminal run payloads are immutable. `record_digest` is SHA-256 over canonical JSON
-excluding only audit/export metadata. Comparison statistics derive from stored
-authoritative reward; they do not create reward.
+excluding only audit/export metadata. A terminal record may be explicitly deleted,
+but never edited. Comparison statistics derive from stored authoritative reward;
+they do not create reward.
+
+New terminal episodes compare only the five bounded public workspace files and write
+a sanitized unified diff to `.frontier/runs/<run_id>/candidate-diff.json`. The
+artifact is capped at 480 KiB of diff text; secret-shaped assignments, known token
+formats, private paths, internal identifiers, and hidden workload identifiers are
+redacted before the file is written. SQLite stores only the changed paths, size,
+redaction/truncation metadata, and artifact digest. That manifest is part of the
+immutable run digest. Deleting only the artifact therefore reclaims space without
+rewriting the score record or its proof that the artifact once existed.

@@ -105,7 +105,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
   return <MotionButton className="icon-text-button" onClick={copy} aria-label={`${label} to clipboard`}>{copied ? <Check size={14} aria-hidden="true" /> : <Clipboard size={14} aria-hidden="true" />}<span>{copied ? "Copied" : label}</span></MotionButton>;
 }
 
-export function ConfirmDialog({ open, title, detail, confirmLabel, onConfirm, onClose }: { open: boolean; title: string; detail: string; confirmLabel: string; onConfirm: () => void; onClose: () => void }) {
+export function ConfirmDialog({ open, title, detail, confirmLabel, cancelLabel = "Keep running", onConfirm, onClose }: { open: boolean; title: string; detail: string; confirmLabel: string; cancelLabel?: string; onConfirm: () => void; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -113,5 +113,5 @@ export function ConfirmDialog({ open, title, detail, confirmLabel, onConfirm, on
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
-  return <dialog ref={ref} className="dialog" onCancel={onClose} onClose={onClose}><div className="dialog-content"><span className="eyebrow">Confirmation</span><h2>{title}</h2><p>{detail}</p><div className="dialog-actions"><MotionButton className="button secondary" onClick={onClose}>Keep running</MotionButton><MotionButton className="button danger-button" onClick={() => { onConfirm(); onClose(); }}>{confirmLabel}</MotionButton></div></div></dialog>;
+  return <dialog ref={ref} className="dialog" onCancel={onClose} onClose={onClose}><div className="dialog-content"><span className="eyebrow">Confirmation</span><h2>{title}</h2><p>{detail}</p><div className="dialog-actions"><MotionButton className="button secondary" onClick={onClose}>{cancelLabel}</MotionButton><MotionButton className="button danger-button" onClick={() => { onConfirm(); onClose(); }}>{confirmLabel}</MotionButton></div></div></dialog>;
 }

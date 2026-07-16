@@ -82,7 +82,24 @@ npm install
 
 ## Run version two
 
-Start both services from the environment root:
+For one-click setup and startup, use the platform launcher from the environment
+root. It checks Git, Python 3.12, Node.js/npm, and project packages; installs missing
+required dependencies with Winget on Windows or Homebrew on macOS; starts the API
+and dashboard; checks their health; and opens the dashboard.
+
+```text
+Windows: double-click start-frontier.cmd
+macOS:   double-click start-frontier.command
+```
+
+Ollama is optional and is never installed or used to download a model automatically.
+When it is already installed, the launcher starts its local service if necessary and
+shows a green local-model status. Otherwise it shows a warning while hosted-provider
+and scripted evaluation features remain available. See **Settings -> Tool
+compatibility** for model support details.
+
+For a developer terminal that already has dependencies installed, start both services
+from the environment root:
 
 ```powershell
 .\scripts\dev_v2.ps1

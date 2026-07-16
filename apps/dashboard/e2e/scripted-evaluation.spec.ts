@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const api = "http://127.0.0.1:8000";
+const api = process.env.FRONTIER_API_URL ?? "http://127.0.0.1:8000";
 let validBatch = "";
 let wrongBatch = "";
 let validRun = "";
@@ -57,8 +57,11 @@ test.describe.serial("polished dashboard journeys", () => {
     await page.goto(`/runs/${validRun}`);
     await expect(page.getByText("Authoritative final score")).toBeVisible();
     await expect(page.locator(".score-hero").getByText("1", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Candidate diff" })).toBeVisible();
+    await expect(page.locator(".candidate-diff-files")).toContainText("service/flow.py");
+    await expect(page.getByText(/digest-bound/)).toBeVisible();
     await expect(page.getByRole("heading", { name: "Action timeline" })).toBeVisible();
-    await expect(page.getByText(/sha256:/)).toBeVisible();
+    await expect(page.locator(".digest-value code")).toContainText("sha256:");
   });
 
   test("5. run timeline filters and sanitized expansion work", async ({ page }) => {
@@ -76,6 +79,8 @@ test.describe.serial("polished dashboard journeys", () => {
     await page.goto("/runs");
     await expect(page.getByRole("heading", { name: "Live runs" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Run history" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Candidate diffs" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete all retained diffs" })).toBeEnabled();
     await expect(page.getByRole("table", { name: "Historical model evaluation runs" })).toContainText("scripted-valid");
     await expect(page.getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
   });
@@ -116,6 +121,14 @@ test.describe.serial("polished dashboard journeys", () => {
     await page.setViewportSize({ width: 768, height: 1024 });
     await page.goto("/evaluations/new");
     await expect(page.getByRole("heading", { name: "New evaluation" })).toBeVisible();
+    const settings = page.getByRole("group", { name: "Recommended settings" });
+    const balanced = settings.getByRole("button", { name: "Apply Balanced preset" });
+    const custom = settings.getByRole("button", { name: "Use Custom settings" });
+    await expect(custom).toHaveAttribute("aria-pressed", "true");
+    await balanced.click();
+    await expect(balanced).toHaveAttribute("aria-pressed", "true");
+    await page.getByLabel("Environment steps").fill("80");
+    await expect(custom).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("radio", { name: /Scripted wrong-control repair/ }).focus();
     await expect(page.getByRole("radio", { name: /Scripted wrong-control repair/ })).toBeFocused();
     await page.getByLabel(/I understand scores/).check();
@@ -151,6 +164,17 @@ test.describe.serial("polished dashboard journeys", () => {
     expect(JSON.stringify(browserStorage)).not.toContain(secret);
     expect(await (await request.get(`${api}/api/providers`)).text()).not.toContain(secret);
     await card.getByRole("button", { name: "Clear session key" }).click();
-    await expect(card.getByText("Missing")).toBeVisible();
+    await expect.poll(async () => {
+      const providers = await (await request.get(`${api}/api/providers`)).json();
+      return providers.items.find((item: { provider: string }) => item.provider === "anthropic").credential.source;
+    }).not.toBe("session");
+    const providers = await (await request.get(`${api}/api/providers`)).json();
+    const source = providers.items.find((item: { provider: string }) => item.provider === "anthropic").credential.source;
+    const fallbackLabel: Record<string, string> = {
+      local_env: "Saved in local .env",
+      environment: "Available from environment",
+      missing: "Missing",
+    };
+    await expect(card.getByText(fallbackLabel[source])).toBeVisible();
   });
 });

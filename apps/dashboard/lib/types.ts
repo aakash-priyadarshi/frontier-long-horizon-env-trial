@@ -16,7 +16,7 @@ export type Provider = {
   };
   credential: {
     state: "not_required" | "missing" | "available";
-    source: "not_required" | "missing" | "environment" | "session" | "os_vault";
+    source: "not_required" | "missing" | "environment" | "local_env" | "session" | "os_vault";
     required: boolean;
   };
   endpoint: ProviderCheckStatus;
@@ -64,6 +64,9 @@ export type ProviderModel = {
   size?: number;
   digest?: string;
   details?: { family?: string; parameter_size?: string; quantization_level?: string };
+  inference_capabilities?: {
+    reasoning_effort: boolean;
+  };
   tool_compatibility?: ToolCompatibility;
   tool_support?: {
     profile_id: string;
@@ -138,7 +141,19 @@ export type Run = {
   record_digest?: string;
   failed_predicates?: string[];
   public_workload_outcomes?: Record<string, { outcome?: string }>;
-  candidate_diff_summary?: { changed_paths: string[]; file_count: number };
+  candidate_diff_summary?: {
+    changed_paths: string[];
+    file_count: number;
+    retention?: {
+      captured: boolean;
+      artifact_digest: string | null;
+      stored_bytes: number;
+      redaction_count: number;
+      truncated: boolean;
+    };
+  };
+  candidate_diff_storage?: CandidateDiffStorage;
+  candidate_diff?: CandidateDiffArtifact;
   authenticated_timeline?: TimelineEntry[];
   model_turn_debug?: ModelTurnDebug[];
   tool_use_debug?: ToolUseDebug | null;
@@ -155,6 +170,45 @@ export type Run = {
     cost_budget?: number | null;
     wall_clock_seconds?: number;
   };
+};
+
+export type CandidateDiffStorage = {
+  state: "available" | "deleted" | "not_captured" | "corrupt";
+  stored_bytes: number;
+  artifact_digest?: string | null;
+};
+
+export type CandidateDiffFile = {
+  path: string;
+  before_sha256: string;
+  after_sha256: string;
+  after_bytes: number;
+  diff: string;
+  truncated: boolean;
+};
+
+export type CandidateDiffArtifact = {
+  artifact_version: string;
+  artifact_digest: string;
+  format: "unified_diff";
+  files: CandidateDiffFile[];
+  file_count: number;
+  changed_paths: string[];
+  redaction_count: number;
+  truncated: boolean;
+};
+
+export type CandidateStorageSummary = {
+  total_bytes: number;
+  available_count: number;
+  deleted_count: number;
+  corrupt_count: number;
+  items?: Array<CandidateDiffStorage & {
+    run_id: string;
+    provider: string;
+    model: string;
+    changed_paths: string[];
+  }>;
 };
 
 export type TimelineEntry = {

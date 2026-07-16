@@ -1,15 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, ArrowRight, Clock3, Plus, RefreshCw } from "lucide-react";
+import { Activity, ArrowRight, Clock3, HardDrive, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import type { Run } from "@/lib/types";
-import { number } from "@/lib/format";
+import type { CandidateStorageSummary, Run } from "@/lib/types";
+import { fileSize, number } from "@/lib/format";
 import { MotionButton } from "@/components/motion";
-import { AuthorityNotice, DataTable, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, ProviderBadge, RunStatusBadge } from "@/components/ui";
+import { AuthorityNotice, ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingState, MetricCard, PageHeader, ProviderBadge, RunStatusBadge } from "@/components/ui";
 
-type RunsResponse = { items: Run[]; total: number; limit: number; offset: number };
+type RunsResponse = { items: Run[]; total: number; limit: number; offset: number; candidate_storage?: CandidateStorageSummary };
 
 const terminalStatuses = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -48,6 +48,8 @@ export default function RunsPage() {
   const [data, setData] = useState<RunsResponse | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupNotice, setCleanupNotice] = useState("");
 
   const load = useCallback(async (manual = false) => {
     if (manual) setRefreshing(true);
@@ -60,6 +62,19 @@ export default function RunsPage() {
       if (manual) setRefreshing(false);
     }
   }, []);
+
+  const deleteAllDiffs = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const result = await api<{ deleted_count: number; reclaimed_bytes: number }>("/api/storage/candidate-diffs", { method: "DELETE" });
+      setCleanupNotice(`Deleted ${result.deleted_count} retained candidate diff${result.deleted_count === 1 ? "" : "s"} and reclaimed ${fileSize(result.reclaimed_bytes)}.`);
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to clean candidate diff storage");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [load]);
 
   useEffect(() => {
     void load();
@@ -94,6 +109,12 @@ export default function RunsPage() {
         <MetricCard label="Total records" numericValue={data.total} detail={data.total > data.items.length ? `showing newest ${data.items.length}` : "all local runs"} />
       </section>
 
+      <section className="surface-section storage-manager" aria-labelledby="candidate-storage-heading">
+        <div><span className="storage-icon"><HardDrive size={18} aria-hidden="true" /></span><div><span className="eyebrow">Local artifact storage</span><h2 id="candidate-storage-heading">Candidate diffs</h2><p>{data.candidate_storage?.available_count ?? 0} retained · {fileSize(data.candidate_storage?.total_bytes ?? 0)} used. Score records and digest manifests remain after diff cleanup.</p></div></div>
+        <MotionButton className="button secondary" onClick={() => setCleanupOpen(true)} disabled={refreshing || !data.candidate_storage?.available_count}><Trash2 size={15} aria-hidden="true" />Delete all retained diffs</MotionButton>
+      </section>
+      {cleanupNotice && <aside className="artifact-notice success" role="status">{cleanupNotice}</aside>}
+
       <section className="surface-section" aria-labelledby="live-runs-heading">
         <div className="section-head"><div><span className="eyebrow">Now</span><h2 id="live-runs-heading">Live runs</h2></div><span className="run-section-count"><span className={active.length ? "status-dot ok" : "status-dot"} />{active.length} active</span></div>
         {active.length ? <div className="live-run-grid">{active.map(run => <LiveRunCard run={run} key={run.run_id} />)}</div> : <div className="runs-empty-inline"><Clock3 size={18} aria-hidden="true" /><div><strong>No episodes are running</strong><p>New queued and running episodes appear here automatically.</p></div></div>}
@@ -101,17 +122,19 @@ export default function RunsPage() {
 
       <section className="surface-section" aria-labelledby="run-history-heading">
         <div className="section-head"><div><span className="eyebrow">Immutable records</span><h2 id="run-history-heading">Run history</h2></div><span className="run-section-count">{history.length} shown</span></div>
-        {history.length ? <DataTable caption="Historical model evaluation runs" headers={["Run", "Provider / model", "Status", "Seed", "Actions / calls", "Score", "Result", "Updated"]} rows={history.map(run => [
+        {history.length ? <DataTable caption="Historical model evaluation runs" headers={["Run", "Provider / model", "Status", "Seed", "Actions / calls", "Score", "Candidate", "Result", "Updated"]} rows={history.map(run => [
           <Link className="text-link" href={`/runs/${run.run_id}`} key="run"><code>{run.run_id.slice(0, 18)}</code></Link>,
           <span className="run-model-cell" key="model"><ProviderBadge provider={run.provider} /><strong>{run.model}</strong></span>,
           <RunStatusBadge status={run.status} key="status" />,
           <span key="seed">{run.seed} / {run.attempt}</span>,
           <span key="activity">{run.action_count ?? 0} / {run.model_call_count ?? 0}</span>,
           <span key="score">{run.authoritative_reward ?? "—"} <small>{run.authoritative_verdict ?? ""}</small></span>,
+          <span key="candidate" className={run.candidate_diff_storage?.state === "available" ? "success" : "muted"}>{run.candidate_diff_storage?.state === "available" ? fileSize(run.candidate_diff_storage.stored_bytes) : run.candidate_diff_storage?.state === "deleted" ? "Diff deleted" : "Not retained"}</span>,
           <code className={run.error_category ? "danger" : "muted"} key="result">{run.error_category ?? run.termination_reason ?? "—"}</code>,
           <span key="updated">{timestamp(run.updated_at ?? run.ended_at)}</span>,
         ])} /> : <EmptyState title="No historical runs" detail="Completed, failed, cancelled, and interrupted episodes will appear here." />}
       </section>
+      <ConfirmDialog open={cleanupOpen} title="Delete all retained candidate diffs?" detail="This reclaims candidate artifact storage across completed episodes. Scores, timelines, changed-file summaries and artifact digests remain." confirmLabel="Delete all diffs" cancelLabel="Cancel" onConfirm={() => void deleteAllDiffs()} onClose={() => setCleanupOpen(false)} />
     </>}
   </>;
 }

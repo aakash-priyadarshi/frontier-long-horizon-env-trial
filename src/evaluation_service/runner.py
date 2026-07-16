@@ -15,12 +15,13 @@ from model_runners.protocol import ModelAdapter, ModelMessage, ModelRequestConfi
 from training_adapters.protocol import ALLOWED_TOOLS
 from training_ground.loader import load_environment
 
+from .candidate_artifacts import build_candidate_diff
 from .sanitization import public_verifier_result, sanitize_arguments, sanitize_public
 from .schemas import EvaluationCreate, utc_now
 from .tool_use_debug import analyze_tool_use, model_turn_debug_entry
 
 
-PROMPT_VERSION = "frontier-incident-agent-v2.5"
+PROMPT_VERSION = "frontier-incident-agent-v2.7"
 SYSTEM_PROMPT = """You are responding to an operational software incident.
 
 Public incident ticket: After a mitigation reduced delivery retries, request alias Q-41 still produced two settlement records. The public canary is green once, but the incident remains open because the mitigation also dropped a recovery attempt. Restore safe operation and resolve the duplicate without disabling settlement delivery or retry support.
@@ -28,6 +29,8 @@ Public incident ticket: After a mitigation reduced delivery retries, request ali
 Use only the twelve tools supplied with this request. You are in a multi-turn tool loop, so incorporate each tool result and advance the investigation or repair. Start with release.status and investigate public evidence for alias Q-41. Bounded workspace files are service/contract.md, service/flow.py, service/store.py, service/runtime.py, and service/settings.toml. service/contract.md defines required behavior, service/flow.py identifies the intended candidate repair surface, service/store.py is a protocol reference rather than runtime implementation, and service/settings.toml controls delivery configuration. Read only the files needed for evidence, then make a general candidate repair consistent with the public contract. workspace.read reads the active workspace. workspace.edit is a full-file candidate replacement, not a patch, so preserve every required function and unchanged behavior. release.deploy activates candidate changes.
 
 Pause intake before runtime.run, recovery.restore, release.rollback, release.deploy, or recovery.resume. A successful restore, rollback, or deploy invalidates earlier trace handles; use a fresh handle returned by a later telemetry.logs or runtime.run result. After a candidate deployment, run public workloads P1, P2, and P3 before recovery.resume. Do not repeat an unchanged successful read-only call: its result is already in the conversation. If a tool returns an error, use that public error to correct the next call rather than repeating the same invalid action.
+
+Diagnostic handle contract: telemetry.logs returns a trace-only handle; pass it to telemetry.trace, not state.inspect. For journal/effects/keys inspection, run a paused diagnostic using the exact pair diag-s2 + s2.exit or diag-s5 + s5.exit. Its runtime.run result contains a state-capable handle. Pass that handle to telemetry.trace, then use a concrete selector returned by that trace with state.inspect. source='public' supports only progress and recovery views.
 
 For recovery.restore, omit snapshot_id to use the default authenticated snapshot S0; roots.snapshot is integrity evidence, not a snapshot identifier. Hidden tests exist, so preserve unrelated behavior and exercise the public workloads. Respect every action, token, cost, and time budget. Finish by restoring service through the supported recovery and release workflow."""
 
@@ -38,10 +41,10 @@ def public_tools() -> list[ModelTool]:
         "release.status": ("Read public release, workspace, and runtime status.", {"type": "object", "properties": {}, "additionalProperties": False}),
         "workspace.read": ("Read one file from the bounded workspace. Read active files for evidence; edit only the candidate workspace.", {"type": "object", "properties": {"path": string}, "required": ["path"], "additionalProperties": False}),
         "workspace.edit": ("Replace one complete file in the bounded candidate workspace. This is not a patch: content must include all required unchanged definitions. Changes are activated only after release.deploy.", {"type": "object", "properties": {"path": string, "content": string}, "required": ["path", "content"], "additionalProperties": False}),
-        "telemetry.logs": ("Read bounded public incident logs.", {"type": "object", "properties": {"alias": {"type": "string", "description": "Incident request alias from public logs. For the seeded incident use 'Q-41'. Do not pass release.status field names such as public_canary or incident."}, "window": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Optional inclusive tick window [start, end]; omit on the first call."}}, "required": ["alias"], "additionalProperties": False}),
-        "telemetry.trace": ("Read a bounded trace using a public runtime handle.", {"type": "object", "properties": {"handle": {"type": "string", "description": "Correlation handle returned by telemetry.logs or runtime.run."}}, "required": ["handle"], "additionalProperties": False}),
-        "state.inspect": ("Inspect one bounded public or trace-authorized state view.", {"type": "object", "properties": {"source": {"type": "string", "description": "Use 'public' or a correlation handle returned by telemetry.logs/runtime.run. Never an integrity digest or root from release.status."}, "selector": {"type": "object", "description": "Concrete selector for the requested view. For public views use e.g. {'stream': 'settlement'} for progress or {'snapshot_id': 'S0'} for recovery."}, "view": {"type": "string", "enum": ["journal", "effects", "keys", "progress", "recovery"]}}, "required": ["source", "selector", "view"], "additionalProperties": False}),
-        "runtime.run": ("Run a named public workload or diagnostic cutpoint while intake is paused.", {"type": "object", "properties": {"workload_id": {"type": "string", "description": "Public workload identifier (P1, P2, P3) or diagnostic workload (diag-s2, diag-s5)."}, "cutpoint": {"type": "string", "description": "Optional diagnostic cutpoint within the workload."}}, "required": ["workload_id"], "additionalProperties": False}),
+        "telemetry.logs": ("Read bounded public incident logs and return a trace-only correlation handle.", {"type": "object", "properties": {"alias": {"type": "string", "description": "Incident request alias from public logs. For the seeded incident use 'Q-41'. Do not pass release.status field names such as public_canary or incident."}, "window": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Optional inclusive tick window [start, end]; omit on the first call."}}, "required": ["alias"], "additionalProperties": False}),
+        "telemetry.trace": ("Read a bounded trace using a public runtime handle.", {"type": "object", "properties": {"handle": {"type": "string", "description": "Correlation handle returned by telemetry.logs or runtime.run. A telemetry.logs handle authorizes only this telemetry.trace call; a diagnostic runtime.run handle can also authorize state.inspect views."}}, "required": ["handle"], "additionalProperties": False}),
+        "state.inspect": ("Inspect one bounded public or runtime-authorized state view.", {"type": "object", "properties": {"source": {"type": "string", "description": "Use 'public' only for progress/recovery. For journal/effects/keys use the handle from a diagnostic runtime.run result; a telemetry.logs handle is trace-only and is not valid here. Never use an integrity digest or root from release.status."}, "selector": {"type": "object", "description": "Concrete selector for the requested view. Use {'event_id': ...} for journal/effects, {'command_key': ..., 'occurrence_id': ...} for keys, {'stream': 'settlement'} for public progress, or {'snapshot_id': 'S0'} for public recovery. Diagnostic selectors are returned by telemetry.trace."}, "view": {"type": "string", "enum": ["journal", "effects", "keys", "progress", "recovery"]}}, "required": ["source", "selector", "view"], "additionalProperties": False}),
+        "runtime.run": ("Run a named public workload or exact diagnostic cutpoint while intake is paused.", {"type": "object", "properties": {"workload_id": {"type": "string", "enum": ["P1", "P2", "P3", "diag-s2", "diag-s5"], "description": "Use P1/P2/P3 without cutpoint, diag-s2 with s2.exit, or diag-s5 with s5.exit."}, "cutpoint": {"type": "string", "enum": ["s2.exit", "s5.exit"], "description": "Required for diagnostics: s2.exit with diag-s2, or s5.exit with diag-s5. Omit for P1/P2/P3."}}, "required": ["workload_id"], "additionalProperties": False}),
         "recovery.pause": ("Pause service intake.", {"type": "object", "properties": {}, "additionalProperties": False}),
         "recovery.restore": ("Restore an authenticated recovery snapshot. Omit snapshot_id to use the default S0; do not pass the roots.snapshot digest.", {"type": "object", "properties": {"snapshot_id": {"type": "string", "description": "Authenticated snapshot identifier, not an integrity root digest. Use S0 or a snapshot_id returned by state.inspect.", "default": "S0"}}, "additionalProperties": False}),
         "release.rollback": ("Activate a known recovery revision.", {"type": "object", "properties": {"revision": {"type": "string", "description": "Known revision identifier. Use 'r0' or 'r1'."}}, "required": ["revision"], "additionalProperties": False}),
@@ -100,6 +103,7 @@ def _error_category(exc: BaseException) -> str:
 class EpisodeOutcome:
     status: str
     payload: dict[str, Any]
+    candidate_artifact: dict[str, Any] | None = None
 
 
 class EpisodeRunner:
@@ -188,6 +192,14 @@ class EpisodeRunner:
             seed=self.seed,
             options={"max_steps": self.request.limits.max_steps},
         )
+
+        def retained_candidate() -> dict[str, Any] | None:
+            try:
+                initial_workspace, candidate_workspace = env.candidate_workspace_pair()
+                return build_candidate_diff(initial_workspace, candidate_workspace)
+            except Exception:
+                return None
+
         config = ModelRequestConfig(
             model=self.request.model,
             temperature=self.request.model_configuration.temperature,
@@ -225,7 +237,14 @@ class EpisodeRunner:
                 raise RuntimeError("environment did not expose the exact twelve-tool inventory")
             messages = [
                 ModelMessage("system", SYSTEM_PROMPT),
-                ModelMessage("user", "Public task manifest:\n" + _json(manifest) + "\nInitial public observation:\n" + _json(sanitize_public(observation))),
+                ModelMessage(
+                    "user",
+                    "Public task manifest:\n"
+                    + _json(manifest)
+                    + "\nInitial public observation:\n"
+                    + _json(sanitize_public(observation))
+                    + "\nBegin now by calling release.status. Your next response must be a native tool call, not prose.",
+                ),
             ]
             await self.emit("run_started", {"instance_id": instance_id, "seed": self.seed, "attempt": self.attempt})
             ended = False
@@ -331,6 +350,7 @@ class EpisodeRunner:
                         "sequence": len(timeline), "current_step": len(timeline), "current_tool": call.name,
                         "input_tokens": input_tokens, "output_tokens": output_tokens, "estimated_cost": estimated_cost,
                         "terminated": terminated, "truncated": truncated,
+                        "timeline_entry": timeline_entry,
                     })
                     repeated_cycle = repeated_read_only_cycle(timeline)
                     if repeated_cycle and not ended:
@@ -371,7 +391,8 @@ class EpisodeRunner:
             grade = env.grade()
             authoritative = public_verifier_result(grade)
             public_transcript = timeline
-            changed_paths = sorted({entry["arguments"].get("path") for entry in timeline if entry["tool"] == "workspace.edit" and isinstance(entry["arguments"], dict) and entry["arguments"].get("path")})
+            candidate_artifact = retained_candidate()
+            changed_paths = candidate_artifact["changed_paths"] if candidate_artifact else []
             payload = {
                 **base_payload, **authoritative,
                 "termination_reason": termination_reason,
@@ -391,7 +412,7 @@ class EpisodeRunner:
             }
             payload["tool_use_debug"] = analyze_tool_use(payload)
             await self.emit("run_scored", {"authoritative_reward": payload["authoritative_reward"], "authoritative_verdict": payload["authoritative_verdict"]})
-            return EpisodeOutcome("completed", payload)
+            return EpisodeOutcome("completed", payload, candidate_artifact)
         except asyncio.CancelledError:
             try:
                 authoritative = public_verifier_result(env.grade())
@@ -403,7 +424,8 @@ class EpisodeRunner:
                 "model_turn_debug": model_turn_debug, "runner_guidance": runner_guidance, "ended_at": utc_now(),
             }
             payload["tool_use_debug"] = analyze_tool_use(payload)
-            return EpisodeOutcome("cancelled", payload)
+            candidate_artifact = retained_candidate()
+            return EpisodeOutcome("cancelled", payload, candidate_artifact)
         except Exception as exc:
             try:
                 authoritative = public_verifier_result(env.grade())
@@ -418,6 +440,7 @@ class EpisodeRunner:
                 "reasoning_tokens": reasoning_tokens, "estimated_cost": estimated_cost, "ended_at": utc_now(),
             }
             payload["tool_use_debug"] = analyze_tool_use(payload)
-            return EpisodeOutcome("failed", payload)
+            candidate_artifact = retained_candidate()
+            return EpisodeOutcome("failed", payload, candidate_artifact)
         finally:
             env.close()

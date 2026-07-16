@@ -661,9 +661,14 @@ class RuntimeEngine:
     def _run_cutpoint_diagnostic(
         self, runtime: RuntimeStore, service_runtime: Any, attempt_budget: int
     ) -> dict[str, Any]:
+        # Consecutive s2/s5 diagnostics must not reuse one logical command. Their
+        # workload aliases are part of the payload, so sharing an identity makes
+        # the second diagnostic look like a conflicting replay before its cutpoint
+        # can execute. Preserve the established s2 identity and isolate s5.
+        identity = "diagnostic_s5" if runtime.cutpoint == "s5.exit" else "diagnostic"
         command = {
-            "command_key": "cmd_diagnostic",
-            "occurrence_id": "occ_diagnostic",
+            "command_key": f"cmd_{identity}",
+            "occurrence_id": f"occ_{identity}",
             "alias": runtime.alias,
             "amount": str(EFFECT_AMOUNT),
         }

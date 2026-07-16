@@ -109,6 +109,48 @@ def test_diagnostic_alias_and_digest_confusion_plus_resume_loop():
     assert report["coverage"]["workspace"] == 0
 
 
+def test_diagnostic_contract_errors_have_exact_public_remediation():
+    run = {
+        "termination_reason": "model_stopped",
+        "model_call_count": 4,
+        "authenticated_timeline": [
+            _entry(
+                1,
+                "state.inspect",
+                success=False,
+                message="state.inspect: invalid_trace_capability: trace capability view not allowed",
+                arguments={"source": "opaque-log-handle", "selector": {"alias": "Q-41"}, "view": "journal"},
+            ),
+            _entry(
+                2,
+                "state.inspect",
+                success=False,
+                message="state.inspect: tool_error: public stream not supported for this view",
+                arguments={"source": "public", "selector": {"alias": "Q-41"}, "view": "journal"},
+            ),
+            _entry(
+                3,
+                "runtime.run",
+                success=False,
+                message="runtime.run: tool_error: unknown workload or missing cutpoint: diag-s2",
+                arguments={"workload_id": "diag-s2"},
+            ),
+        ],
+    }
+    report = analyze_tool_use(run)
+    findings = {finding["code"]: finding for finding in report["findings"]}
+    assert "diagnostic_handle_view_not_allowed" in findings
+    assert "telemetry.logs handles authorize telemetry.trace only" in findings[
+        "diagnostic_handle_view_not_allowed"
+    ]["remediation"]
+    assert "diagnostic_public_view_not_supported" in findings
+    assert "progress" in findings["diagnostic_public_view_not_supported"]["remediation"]
+    assert "diagnostic_invalid_workload_or_cutpoint" in findings
+    assert "diag-s2 with s2.exit" in findings[
+        "diagnostic_invalid_workload_or_cutpoint"
+    ]["remediation"]
+
+
 def test_malformed_protocol_failure_outranks_workflow_warnings():
     run = {
         "termination_reason": "provider_or_runner_failure",

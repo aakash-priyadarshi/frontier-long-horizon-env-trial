@@ -26,6 +26,8 @@ class Settings:
     database_path: Path
     event_replay_limit: int = 1_000
     dashboard_origin: str = "http://localhost:3000"
+    local_env_path: Path | None = None
+    provider_state_path: Path | None = None
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -35,4 +37,8 @@ class Settings:
             database_path=Path(os.getenv("FRONTIER_DATABASE_PATH", data_dir / "evaluations.sqlite3")),
             event_replay_limit=max(100, int(os.getenv("FRONTIER_EVENT_REPLAY_LIMIT", "1000"))),
             dashboard_origin=os.getenv("FRONTIER_DASHBOARD_ORIGIN", "http://localhost:3000"),
+            local_env_path=Path(os.getenv("FRONTIER_ENV_PATH", ".env")),
+            provider_state_path=Path(
+                os.getenv("FRONTIER_PROVIDER_STATE_PATH", data_dir / "provider-state.json")
+            ),
         )

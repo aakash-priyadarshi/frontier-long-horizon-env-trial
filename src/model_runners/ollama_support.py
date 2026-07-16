@@ -39,7 +39,11 @@ OLLAMA_TOOL_SUPPORT: tuple[dict[str, Any], ...] = (
         "examples": ["deepseek-r1:8b", "deepseek-r1:8b-0528-qwen3-q4_K_M"],
         "support": "profile_available",
         "hardware": "The Q4 8B tag is the DeepSeek option intended for an 8 GB GPU; use a bounded context.",
-        "notes": "Use the current Qwen3-based 8B release. The older Llama-distill 8B template is excluded below.",
+        "notes": (
+            "The weights are Qwen3, but the currently published Ollama template does not inject .Tools. "
+            "The standard 8B tags are therefore listed as known limitations below; a future or custom "
+            "tool-aware template must still pass for its exact digest."
+        ),
         "profile": dict(DEFAULT_OLLAMA_PROBE_PROFILE),
     },
     {
@@ -107,6 +111,25 @@ OLLAMA_TOOL_SUPPORT: tuple[dict[str, Any], ...] = (
 
 OLLAMA_KNOWN_LIMITATIONS: tuple[dict[str, Any], ...] = (
     {
+        "patterns": [
+            "deepseek-r1",
+            "deepseek-r1:latest",
+            "deepseek-r1:8b",
+            "deepseek-r1:8b-0528-qwen3-*",
+        ],
+        "name": "DeepSeek R1 0528 Qwen3 8B",
+        "code": "published_template_without_tool_definitions",
+        "detail": (
+            "The current Qwen3-based weights advertise tools, but the published chat template does not inject "
+            "the supplied tool definitions. The tested tag exhausted bounded output in reasoning without a "
+            "native tool call, including with schema-guided instructions."
+        ),
+        "recommendation": (
+            "Use qwen3:8b for native-tool evaluation, or give a separately named custom/future DeepSeek "
+            "template an exact-digest compatibility test before evaluation."
+        ),
+    },
+    {
         "patterns": ["deepseek-r1:8b-llama-distill-*"],
         "name": "DeepSeek R1 Llama-distill 8B",
         "code": "legacy_template_without_tool_definitions",
@@ -145,6 +168,19 @@ def profile_for_model(model: str) -> dict[str, Any]:
     if support is None:
         return dict(DEFAULT_OLLAMA_PROBE_PROFILE)
     return dict(support["profile"])
+
+
+def supports_reasoning_effort(model: str) -> bool:
+    """Return whether Frontier's model profile supports Ollama's native think option.
+
+    Unknown models default to false for episode configuration. Their isolated
+    compatibility probe can still exercise an explicitly chosen thinking mode.
+    """
+
+    support = support_for_model(model)
+    if support is None:
+        return False
+    return support["profile"].get("thinking") != "default"
 
 
 def public_support_catalog() -> dict[str, Any]:

@@ -12,8 +12,10 @@ Routes:
   matrix, hard budgets, estimated episode count, and explicit confirmation.
 - `/evaluations/[batchId]`: replayable live SSE progress, episode cards, usage, and
   cancellation.
+- `/runs`: live/history operations plus candidate-diff storage usage and bulk cleanup.
 - `/runs/[runId]`: authoritative score, verdict, digest, public workload outcomes,
-  code-change summary, and progressively rendered sanitized action timeline.
+  sanitized digest-bound candidate diff, progressively rendered action timeline,
+  diff cleanup, complete JSON download, and confirmed terminal-episode deletion.
 - `/compare`: compatibility warnings, metric table, and reusable Chart.js views.
 - `/settings`: browser-safe provider and runtime status.
 

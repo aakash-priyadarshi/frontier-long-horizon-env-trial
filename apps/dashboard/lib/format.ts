@@ -18,3 +18,15 @@ export function duration(value: number | null | undefined): string {
 export function shortHash(value: string | null | undefined): string {
   return value ? value.replace("sha256:", "").slice(0, 10) : "—";
 }
+
+export function fileSize(value: number | null | undefined): string {
+  if (value == null) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${number(size, unit === 0 ? 0 : 1)} ${units[unit]}`;
+}

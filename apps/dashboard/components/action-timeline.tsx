@@ -35,11 +35,15 @@ export function ActionTimeline({ entries, live = false }: { entries: TimelineEnt
   const shown = filtered.slice(0, visible);
 
   useEffect(() => {
+    if (live && autoScroll) setVisible(current => Math.max(current, entries.length));
+  }, [autoScroll, entries.length, live]);
+
+  useEffect(() => {
     if (live && autoScroll && shown.length === filtered.length) endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [autoScroll, entries.length, filtered.length, live, shown.length]);
 
-  if (!entries.length) return <EmptyState title="No authenticated actions" detail="The episode has not produced a sanitized environment-tool record yet." />;
-  return <div className="timeline-shell">
+  if (!entries.length) return <div aria-live={live ? "polite" : undefined}><EmptyState title={live ? "Waiting for the first action" : "No authenticated actions"} detail={live ? "Each completed environment tool will appear here automatically while the model continues." : "The episode has not produced a sanitized environment-tool record yet."} /></div>;
+  return <div className="timeline-shell" aria-live={live ? "polite" : undefined}>
     <div className="timeline-toolbar">
       <div className="timeline-filters" role="tablist" aria-label="Timeline category">
         {filters.map(item => <MotionButton role="tab" aria-selected={filter === item.id} className={filter === item.id ? "filter-tab active" : "filter-tab"} key={item.id} onClick={() => { setFilter(item.id); setVisible(40); }}>{item.label}<span>{item.id === "all" ? entries.length : entries.filter(entry => toolCategory(entry.tool) === item.id).length}</span></MotionButton>)}
@@ -59,7 +63,7 @@ export function ActionTimeline({ entries, live = false }: { entries: TimelineEnt
               <div className="timeline-detail-head"><span>Sanitized request and result</span><div><CopyButton value={request} label="Copy request" /><CopyButton value={result} label="Copy result" /></div></div>
               <div className="code-grid"><div><span>Request arguments</span><pre>{request}</pre></div><div><span>Result summary</span><pre>{result}</pre></div></div>
             </ExpandablePanel>
-            <div className="timeline-meta"><span>tick {entry.fake_tick ?? "—"}</span><span>{entry.request_bytes} B request</span><span>{entry.response_bytes} B response</span>{entry.error_code && <span className="danger">{entry.error_code}</span>}{entry.terminated && <span className="success">terminated</span>}{entry.truncated && <span className="warning">truncated</span>}{current && <span className="current-step-label">Current step</span>}</div>
+            <div className="timeline-meta"><span>tick {entry.fake_tick ?? "—"}</span><span>{entry.request_bytes} B request</span><span>{entry.response_bytes} B response</span>{entry.error_code && <span className="danger">{entry.error_code}</span>}{entry.terminated && <span className="success">terminated</span>}{entry.truncated && <span className="warning">truncated</span>}{current && <span className="current-step-label">Latest live action</span>}</div>
           </div>
         </article>;
       })}

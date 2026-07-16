@@ -64,12 +64,13 @@ class ProviderSessionConfiguration(BaseModel):
 
     credential: SecretStr | None = Field(default=None, max_length=16_384)
     base_url: str | None = Field(default=None, max_length=2_048)
+    persist: bool = False
 
     @model_validator(mode="after")
     def require_update(self) -> "ProviderSessionConfiguration":
         if not self.model_fields_set.intersection({"credential", "base_url"}):
             raise ValueError("credential or base_url is required")
-        if self.model_fields_set == {"credential"} and self.credential is None:
+        if "credential" in self.model_fields_set and self.credential is None:
             raise ValueError("credential cannot be null")
         return self
 

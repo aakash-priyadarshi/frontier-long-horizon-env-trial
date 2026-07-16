@@ -13,7 +13,7 @@ from model_runners.registry import ProviderRegistry
 
 from ..comparison import compare_batches
 from ..orchestration import EvaluationOrchestrator
-from ..persistence import EvaluationStore, canonical_json
+from ..persistence import ActiveRunDeletionError, EvaluationStore, canonical_json
 from ..sanitization import contains_forbidden_public_data
 from ..schemas import EvaluationCreate, ProviderSessionConfiguration, ProviderToolProbeRequest
 from ..settings import Settings, dashboard_origins
@@ -43,17 +43,17 @@ def build_router(
             headers={"Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff"},
         )
 
-    def validate_provider_control_request(request: Request) -> None:
+    def validate_local_mutation_request(request: Request) -> None:
         if request.url.hostname not in {"127.0.0.1", "localhost", "::1"}:
             raise HTTPException(
                 status_code=403,
-                detail={"code": "local_request_required", "message": "provider settings are available only on loopback"},
+                detail={"code": "local_request_required", "message": "local controls are available only on loopback"},
             )
         origin = request.headers.get("origin", "").rstrip("/")
         if origin not in dashboard_origins(settings.dashboard_origin):
             raise HTTPException(
                 status_code=403,
-                detail={"code": "origin_not_allowed", "message": "provider settings request origin is not allowed"},
+                detail={"code": "origin_not_allowed", "message": "local control request origin is not allowed"},
             )
 
     @router.get("/health")
@@ -104,7 +104,7 @@ def build_router(
         provider: str,
         payload: ProviderSessionConfiguration,
     ) -> JSONResponse:
-        validate_provider_control_request(request)
+        validate_local_mutation_request(request)
         try:
             credential = payload.credential.get_secret_value() if payload.credential is not None else None
             status = registry.set_session_configuration(
@@ -112,6 +112,7 @@ def build_router(
                 credential=credential,
                 base_url=payload.base_url,
                 update_base_url="base_url" in payload.model_fields_set,
+                persist=payload.persist,
             )
         except KeyError:
             raise _not_found("provider")
@@ -123,17 +124,21 @@ def build_router(
         return no_store({"provider": status})
 
     @router.delete("/providers/{provider}/credentials")
-    async def clear_provider_credential(request: Request, provider: str) -> JSONResponse:
-        validate_provider_control_request(request)
+    async def clear_provider_credential(
+        request: Request,
+        provider: str,
+        remove_local: Annotated[bool, Query()] = False,
+    ) -> JSONResponse:
+        validate_local_mutation_request(request)
         try:
-            status = registry.clear_session_credential(provider)
+            status = registry.clear_session_credential(provider, remove_local=remove_local)
         except KeyError:
             raise _not_found("provider")
         return no_store({"provider": status})
 
     @router.post("/providers/{provider}/connection-test")
     async def test_provider_connection(request: Request, provider: str) -> JSONResponse:
-        validate_provider_control_request(request)
+        validate_local_mutation_request(request)
         try:
             status = await registry.discover_models(provider)
         except KeyError:
@@ -146,7 +151,7 @@ def build_router(
         provider: str,
         payload: ProviderToolProbeRequest,
     ) -> JSONResponse:
-        validate_provider_control_request(request)
+        validate_local_mutation_request(request)
         try:
             result = await registry.probe_tool_call(
                 provider,
@@ -248,11 +253,22 @@ def build_router(
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> dict[str, Any]:
         items, total = store.list_runs(limit=limit, offset=offset)
+        storage = store.candidate_storage_summary()
         return {
-            "items": [run_summary(item) for item in items],
+            "items": [
+                {
+                    **run_summary(item),
+                    "candidate_diff_storage": store.candidate_artifact(item["run_id"])[1],
+                }
+                for item in items
+            ],
             "total": total,
             "limit": limit,
             "offset": offset,
+            "candidate_storage": {
+                key: storage[key]
+                for key in ("total_bytes", "available_count", "deleted_count", "corrupt_count")
+            },
         }
 
     @router.get("/runs/{run_id}")
@@ -260,8 +276,48 @@ def build_router(
         result = store.get_run(run_id)
         if result is None:
             raise _not_found("run")
+        candidate_diff, candidate_diff_storage = store.candidate_artifact(run_id)
         # Computed on read so historical episodes gain the debug panel without re-running.
-        return {**result, "tool_use_debug": analyze_tool_use(result)}
+        response = {
+            **result,
+            "tool_use_debug": analyze_tool_use(result),
+            "candidate_diff_storage": candidate_diff_storage,
+        }
+        if candidate_diff is not None:
+            response["candidate_diff"] = candidate_diff
+        return response
+
+    @router.delete("/runs/{run_id}/candidate-diff")
+    async def delete_candidate_diff(request: Request, run_id: str) -> JSONResponse:
+        validate_local_mutation_request(request)
+        try:
+            result = store.delete_candidate_artifact(run_id)
+        except KeyError:
+            raise _not_found("run")
+        return no_store(result)
+
+    @router.delete("/runs/{run_id}")
+    async def delete_run(request: Request, run_id: str) -> JSONResponse:
+        validate_local_mutation_request(request)
+        try:
+            result = store.delete_run(run_id)
+        except KeyError:
+            raise _not_found("run")
+        except ActiveRunDeletionError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "run_active", "message": str(exc)},
+            ) from exc
+        return no_store(result)
+
+    @router.get("/storage/candidate-diffs")
+    async def candidate_diff_storage() -> JSONResponse:
+        return no_store(store.candidate_storage_summary())
+
+    @router.delete("/storage/candidate-diffs")
+    async def delete_all_candidate_diffs(request: Request) -> JSONResponse:
+        validate_local_mutation_request(request)
+        return no_store(store.delete_all_candidate_artifacts())
 
     @router.get("/runs/{run_id}/events")
     async def run_events(
