@@ -23,6 +23,14 @@ Thumbs.db
 local_runs/
 scratch/
 tmp/
+.frontier/
+
+# Dashboard dependencies and build output
+node_modules/
+.next/
+apps/dashboard/playwright-report/
+apps/dashboard/test-results/
+*.tsbuildinfo
 
 # Private internal notes not intended for submission
 private_notes/

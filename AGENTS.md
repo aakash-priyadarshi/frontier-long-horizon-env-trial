@@ -27,22 +27,25 @@ proceeds only through explicitly approved milestones.
 
 ## Current stage
 
-**Current stage: final remediation implemented. Audit falsifications have targeted
-fixes and regression coverage in this worktree; the branch is awaiting post-fix
-independent audit and has no submission-readiness claim.**
+**Current stage: version two model-evaluation dashboard implementation on
+`feature/model-evaluation-dashboard`. The version-one submission remains frozen at
+`trial-submission-v1`; V2 is additive and is not a submission-readiness claim for
+hosted model providers.**
 
 ### Allowed
 
+- V2 model runners, local evaluation service, immutable records, CLI, dashboard,
+  tests, documentation, and V2 evidence on the feature branch.
 - Final remediation maintenance, regression checks, and evidence regeneration.
-- Reproduce Milestone 1 verification as a regression baseline.
+- Reproduce all version-one verification as a regression baseline.
 
-### Not allowed yet
+### Not allowed
 
-- Any new implementation milestones without explicit user approval.
-- Hidden verifier implementation beyond what Milestone 2 explicitly requires.
-- Model evaluation.
-- Unsupported isolation or performance claims.
-- Broadening into later milestones without explicit approval.
+- Any change to `main`, `trial-submission-v1`, or the V1 final receipt.
+- Alternate scoring logic outside the strict verifier.
+- Hidden workload/member disclosure or privileged tools in evaluated-model runtime.
+- Unsupported hosted-provider, isolation, APEX, Docker, or performance claims.
+- Merging V2 to `main` without explicit approval.
 
 ## Originality and IP
 

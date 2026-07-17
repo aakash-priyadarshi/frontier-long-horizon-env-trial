@@ -1,0 +1,121 @@
+{
+  "audited_environment_source": "95acd24abe112aa95c9344bc15972ae9a72e1367",
+  "dashboard": {
+    "lint": "pass",
+    "npm_audit": "pass",
+    "playwright": {
+      "count": 12,
+      "result": "pass"
+    },
+    "production_build": "pass",
+    "typecheck": "pass",
+    "unit_tests": {
+      "count": 43,
+      "result": "pass"
+    }
+  },
+  "hidden_state_leak_checks": "pass",
+  "limitations": [
+    "Hosted provider transports were not exercised because credentials were unavailable.",
+    "Ollama transport was not exercised against a running local model server.",
+    "OS credential-vault persistence and automatic Ollama downloads are not implemented.",
+    "APEX-SWE upstream execution and Docker execution remain NOT VERIFIED.",
+    "This is a local developer control plane, not production multi-tenant isolation."
+  ],
+  "local_urls": {
+    "api": "http://localhost:8000",
+    "dashboard": "http://localhost:3000"
+  },
+  "parent_v1_receipt_commit": "abcb015d320d3036d223ec1ba540662503acb588",
+  "provider_configuration_security": {
+    "automatic_model_pull": "not_implemented",
+    "base_url_ssrf_policy": "pass",
+    "clear_reveals_environment_fallback": true,
+    "concurrent_provider_isolation": "verified_by_v2_tests",
+    "credential_precedence": "session_then_environment_then_missing",
+    "memory_only_restart_clears_session": true,
+    "ollama_offline_and_tags_contract": "pass",
+    "permitted_dashboard_origins": [
+      "http://127.0.0.1:3000",
+      "http://localhost:3000"
+    ],
+    "redirects_followed": false,
+    "secret_surfaces": {
+      "browser_storage": "pass",
+      "exceptions": "pass",
+      "exports": "pass",
+      "get": "pass",
+      "logs": "pass",
+      "sqlite": "pass",
+      "sse": "pass"
+    },
+    "tool_probe_digest_bound": true,
+    "tool_probe_isolated": true,
+    "unapproved_origin_rejection": "verified_by_v2_tests",
+    "unsupported_discovery_is_failure": false,
+    "wildcard_credential_cors": false
+  },
+  "provider_support": {
+    "anthropic": "implemented_not_verified_with_real_credentials",
+    "gemini": "implemented_not_verified_with_real_credentials",
+    "ollama": "offline_and_discovery_contract_verified_local_model_not_verified",
+    "openai-compatible": "implemented_not_verified_with_real_credentials",
+    "scripted": "verified"
+  },
+  "providers_exercised": [
+    "scripted"
+  ],
+  "providers_not_verified": [
+    "openai-compatible",
+    "anthropic",
+    "gemini",
+    "ollama"
+  ],
+  "python": {
+    "all_tests": {
+      "count": 358,
+      "result": "pass"
+    },
+    "original_tests": {
+      "count": 245,
+      "result": "pass"
+    },
+    "v2_tests": {
+      "count": 113,
+      "result": "pass"
+    }
+  },
+  "result_digest_verification": true,
+  "schema_version": "2.0.0",
+  "score_authority_equivalence": true,
+  "scripted_valid": {
+    "api": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "browser": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "cli": {
+      "result": "pass",
+      "score": 1.0
+    },
+    "direct": {
+      "actions": 20,
+      "score": 1.0,
+      "verdict": "pass"
+    }
+  },
+  "scripted_wrong_control": {
+    "failed_predicates": [
+      "member_hidden_workloads_pass"
+    ],
+    "score": 0.85,
+    "verdict": "partial"
+  },
+  "secret_leak_checks": "pass",
+  "source_commit": "8a0df6c02931250dfc12f48e7dd7335d31c23946",
+  "timestamp": "2026-07-16T08:21:21.453415Z",
+  "version_one_tag_sha": "abcb015d320d3036d223ec1ba540662503acb588"
+}

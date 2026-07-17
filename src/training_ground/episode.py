@@ -299,6 +299,13 @@ class IncidentEnv:
     def transcript(self) -> list[dict[str, Any]]:
         return self._transcript.to_list()
 
+    def candidate_workspace_pair(self) -> tuple[Path, Path]:
+        """Return the public initial/candidate workspaces for builder-side retention."""
+        if self._client is None or self._closed or self._client.session_dir is None:
+            raise EnvironmentError("environment is not reset")
+        session_dir = self._client.session_dir
+        return session_dir / "initial", session_dir / "candidate"
+
     def close(self) -> None:
         if self._closed:
             return

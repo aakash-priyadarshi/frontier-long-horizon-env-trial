@@ -6,10 +6,21 @@ artifacts and distinct privileged histories.
 
 ## Current status
 
-**Final remediation is implemented in this worktree and is awaiting post-fix
-independent audit. This is not a submission-readiness claim.** The environment now
-provides a canonical `training_ground` core, a strict `strict_verifier` grader,
-Gymnasium adapters, and APEX-SWE task-pack/side-car smoke compatibility.
+Version two adds a locally runnable model-evaluation control plane on
+`feature/model-evaluation-dashboard`. The existing `training_ground` environment
+and strict verifier remain the sole action and scoring authorities. Version one is
+frozen at `trial-submission-v1` (`abcb015d…`); V2 is additive and is not merged to
+`main`.
+
+The V2 product includes:
+
+- a FastAPI/SQLite evaluation service with SSE replay and immutable terminal records;
+- provider-neutral scripted, OpenAI-compatible, Anthropic, Gemini, and Ollama adapters;
+- a deterministic valid baseline and a wrong-control baseline over the real twelve tools;
+- a shared `python -m model_eval` CLI;
+- a responsive Next.js dashboard using Motion for React and Chart.js, with
+  reduced-motion behavior, deterministic model colours, and chart/table alternatives;
+- credential, hidden-state, digest, API, unit, and Playwright verification.
 
 The repository currently provides:
 
@@ -54,6 +65,7 @@ tests/milestone_2/            Focused Milestone 2 interaction-layer verification
 scripts/                      Reproducible verification entrypoints
 docs/                         Implemented Milestone 1 boundary documentation
 evidence/                     Machine-readable verification receipts
+CHANGELOG.md                  Detailed V2 dashboard and provider release notes
 ```
 
 ## Setup
@@ -63,7 +75,54 @@ Python 3.12 is required. From PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[test]"
+
+cd apps\dashboard
+npm install
 ```
+
+## Run version two
+
+For one-click setup and startup, use the platform launcher from the environment
+root. It checks Git, Python 3.12, Node.js/npm, and project packages; installs missing
+required dependencies with Winget on Windows or Homebrew on macOS; starts the API
+and dashboard; checks their health; and opens the dashboard.
+
+```text
+Windows: double-click start-frontier.cmd
+macOS:   double-click start-frontier.command
+```
+
+Ollama is optional and is never installed or used to download a model automatically.
+When it is already installed, the launcher starts its local service if necessary and
+shows a green local-model status. Otherwise it shows a warning while hosted-provider
+and scripted evaluation features remain available. See **Settings -> Tool
+compatibility** for model support details.
+
+For a developer terminal that already has dependencies installed, start both services
+from the environment root:
+
+```powershell
+.\scripts\dev_v2.ps1
+```
+
+- Dashboard: `http://localhost:3000`
+- API and OpenAPI: `http://localhost:8000`, `http://localhost:8000/docs`
+
+Or use two terminals:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn evaluation_service.app:app --reload --port 8000
+cd apps\dashboard
+npm run dev
+```
+
+Credential-free CLI demo:
+
+```powershell
+.\.venv\Scripts\python.exe -m model_eval run --provider scripted --model scripted-valid --split eval --seed 0 --attempts 1
+```
+
+See `docs/V2_LOCAL_DEVELOPMENT.md` and `.env.example` for full configuration.
 
 ## Verify
 
