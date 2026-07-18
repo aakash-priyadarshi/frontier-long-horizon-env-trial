@@ -648,6 +648,34 @@ pre { overflow: auto; max-height: 360px; margin: 0; padding: 11px; border: 1px s
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 24px; }
 
 .muted { color: var(--muted); }
+.talon-boundary { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; padding: 15px 17px; border: 1px solid color-mix(in srgb, var(--success) 38%, var(--border)); background: color-mix(in srgb, var(--success) 7%, var(--surface)); border-radius: var(--radius); }
+.talon-boundary svg { flex: 0 0 auto; color: var(--success); }
+.talon-boundary strong { display: block; margin-bottom: 4px; }
+.talon-boundary p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.talon-subnav { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 22px; }
+.talon-subnav a { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 8px; font-size: 12px; }
+.talon-subnav a:hover { border-color: var(--accent); color: var(--text); }
+.talon-route-grid, .scenario-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+.talon-route-grid > a { min-height: 150px; padding: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 9px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); }
+.talon-route-grid > a:hover { border-color: var(--accent); transform: translateY(-1px); }
+.talon-route-grid svg { color: var(--accent); }
+.talon-route-grid span, .scenario-grid p { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.scenario-grid .surface-section { margin: 0; }
+.scenario-grid h2 { margin: 10px 0 6px; }
+.scenario-grid .section-head { min-height: 24px; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.tag-row code { padding: 4px 7px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 6px; font-size: 10px; }
+.public-hidden-explainer { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.public-hidden-explainer h2 { margin: 5px 0; }
+.public-hidden-explainer p { margin: 0; color: var(--muted); }
+.policy-list { margin: 12px 0 0; padding-left: 19px; display: grid; gap: 8px; color: var(--muted); }
+.constraint-badges { display: grid; gap: 7px; margin-top: 16px; }
+.record-list { display: grid; gap: 8px; }
+.record-list > a { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; }
+.record-list > a > div { display: grid; gap: 3px; }
+.record-list span { color: var(--muted); font-size: 11px; }
+.form-action { display: flex; align-items: flex-end; }
+.json-block { max-height: 420px; overflow: auto; padding: 14px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; font-size: 11px; }
 .success { color: var(--success); }
 .warning { color: var(--warning); }
 .danger { color: var(--danger); }
@@ -686,6 +714,7 @@ pre { overflow: auto; max-height: 360px; margin: 0; padding: 11px; border: 1px s
   .start-confirmation { grid-template-columns: 1fr; }
   .comparison-controls { grid-template-columns: 1fr; }
   .timeline-toolbar { align-items: flex-start; flex-direction: column; }
+  .talon-route-grid, .scenario-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 560px) {
@@ -719,6 +748,7 @@ pre { overflow: auto; max-height: 360px; margin: 0; padding: 11px; border: 1px s
   .artifact-actions, .danger-zone, .storage-manager { align-items: stretch; flex-direction: column; }
   .artifact-action-buttons { align-items: stretch; flex-direction: column; }
   .artifact-digest { grid-template-columns: 1fr; }
+  .talon-route-grid, .scenario-grid, .public-hidden-explainer { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -197,3 +197,27 @@ export function EpisodeRewardProgression({ rewards, mode = "chart" }: { rewards:
   const options = useCartesianOptions<"line">({ max: 1, points: rewards.length });
   return rewards.length ? <ChartCard title="Episode reward progression" description="Shown only where the environment emitted valid step rewards." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="No step rewards" detail="This episode emitted reward only at terminal strict grading." /></section>;
 }
+
+export function TrainingCurveChart({ points, mode = "chart" }: { points: Array<{ epoch: number; loss: number; action_accuracy: number }>; mode?: ChartViewMode }) {
+  const data = useMemo<ChartData<"line">>(() => ({ labels: points.map(point => point.epoch), datasets: [
+    { label: "Loss", data: points.map(point => point.loss), borderColor: MODEL_COLORS[0], backgroundColor: MODEL_COLORS[0], yAxisID: "y" },
+    { label: "Action accuracy", data: points.map(point => point.action_accuracy), borderColor: MODEL_COLORS[2], backgroundColor: MODEL_COLORS[2], yAxisID: "y1" },
+  ] }), [points]);
+  const base = useCartesianOptions<"line">({ points: points.length * 2 });
+  const options = useMemo<ChartOptions<"line">>(() => ({ ...base, scales: {
+    ...base.scales,
+    y: { ...base.scales?.y, beginAtZero: true, position: "left" },
+    y1: { beginAtZero: true, max: 1, position: "right", grid: { drawOnChartArea: false } },
+  } }), [base]);
+  return points.length ? <ChartCard title="Training progress" description="Live supervised loss and expert-action accuracy. The policy gate is evaluated separately." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="No training epochs yet" detail="The curve will populate from replayable training events." /></section>;
+}
+
+export function TalonCalibrationChart({ bins, mode = "chart" }: { bins: Array<{ lower: number; upper: number; count: number; mean_confidence: number; gate_acceptance_rate: number }>; mode?: ChartViewMode }) {
+  const populated = useMemo(() => bins.filter(bin => bin.count > 0), [bins]);
+  const data = useMemo<ChartData<"line">>(() => ({ labels: populated.map(bin => `${Math.round(bin.lower * 100)}–${Math.round(bin.upper * 100)}%`), datasets: [
+    { label: "Mean confidence", data: populated.map(bin => bin.mean_confidence), borderColor: MODEL_COLORS[0], backgroundColor: MODEL_COLORS[0] },
+    { label: "Gate acceptance rate", data: populated.map(bin => bin.gate_acceptance_rate), borderColor: MODEL_COLORS[2], backgroundColor: MODEL_COLORS[2] },
+  ] }), [populated]);
+  const options = useCartesianOptions<"line">({ max: 1, points: populated.length * 2 });
+  return populated.length ? <ChartCard title="Confidence calibration" description="Aggregate recommendation confidence versus public policy-gate acceptance; no hidden reference action is exposed." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="Calibration pending" detail="Completed episodes will populate bounded confidence bins." /></section>;
+}

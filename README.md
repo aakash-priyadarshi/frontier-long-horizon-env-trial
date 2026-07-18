@@ -22,6 +22,15 @@ The V2 product includes:
   reduced-motion behavior, deterministic model colours, and chart/table alternatives;
 - credential, hidden-state, digest, API, unit, and Playwright verification.
 
+The additive Talon Milestone 1 implementation on
+`feature/talon-simulation-milestone-1` adds a separate, simulation-only decision
+training laboratory. It consumes structured detector/tracker observations, predicts
+one of thirteen abstract recommendation actions, applies an unbypassable deterministic
+policy gate, and always leaves any external decision to a human. Evaluated policies
+run in a public-only isolated process; privileged scenario truth and strict
+predicates remain in verifier-owned private storage. It contains no hardware,
+flight-control, radio-interference, interception, or physical-response integration.
+
 The repository currently provides:
 
 - a single-process Python 3.12 service substrate backed by SQLite;
@@ -60,6 +69,9 @@ are **NOT VERIFIED**.
 research/                     Research, approved design, and independent audit
 src/event_service_substrate/  Deterministic service and persistence substrate
 src/agent_surface/            Evaluated-agent interaction layer and gateway
+src/drone_decision_ground/    Talon public schemas, actions, simulator, and policy gate
+src/drone_decision_verifier/  Talon privileged scenarios and strict safety grading
+src/drone_training/           Talon datasets, learned policies, CLI, API, and records
 tests/milestone_1/            Focused Milestone 1 verification
 tests/milestone_2/            Focused Milestone 2 interaction-layer verification
 scripts/                      Reproducible verification entrypoints
@@ -74,7 +86,7 @@ Python 3.12 is required. From PowerShell:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pip install -e ".[test,adapters,talon]"
 
 cd apps\dashboard
 npm install
@@ -124,12 +136,51 @@ Credential-free CLI demo:
 
 See `docs/V2_LOCAL_DEVELOPMENT.md` and `.env.example` for full configuration.
 
+## Run Talon Milestone 1
+
+Start the normal V2 API and dashboard, then open `http://localhost:3000/talon`.
+Talon initializes lazily and stores records in a separate SQLite database and
+artifact directory. The dashboard supports real private dataset jobs, GRU and
+Decision Transformer training, live evaluation timelines, strict safety metrics,
+one-time approval/replay demonstrations, safe JSON export, cancellation, and
+dependency-aware deletion.
+
+Talon has thirteen abstract actions. Command-link state is available only through
+the dedicated `REQUEST_COMMAND_LINK_VERIFICATION` action. Private datasets remain
+under `TALON_DATA_DIR/private` and are strictly parsed and digest-recomputed before
+they can affect normalization, training, evaluation, inspection, or checkpoints.
+
+The CLI is a privileged local operator interface. A minimal private flow is:
+
+```powershell
+.\.venv\Scripts\python.exe -m drone_training generate-dataset `
+  --output .frontier\talon-demo\train.json --partition train --seed-count 2
+
+.\.venv\Scripts\python.exe -m drone_training train-gru `
+  --dataset .frontier\talon-demo\train.json `
+  --output-dir .frontier\talon-demo\gru --epochs 5
+```
+
+The GRU is the first behaviour-cloning baseline. The custom Decision Transformer is
+available through `train-decision-transformer`. Training, validation, and evaluation
+metrics are reported separately; training accuracy is not a generalization or safety
+claim. Neither model can invoke an external system. See `docs/TALON_SIMULATION.md`
+and `docs/TALON_API.md` for schemas, approval/process isolation, partitions, export
+allowlists, routes, and verification.
+
 ## Verify
 
 Run the full test suite:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q
+uv run --extra talon --extra test python -m pytest tests -q
+```
+
+Run the Talon remediation verifier without generating evidence from the intentionally
+dirty implementation tree:
+
+```powershell
+uv run --extra talon --extra test python scripts\verify_talon_milestone_1.py --check-only
 ```
 
 Regenerate the final machine-readable receipt from fresh live runs:

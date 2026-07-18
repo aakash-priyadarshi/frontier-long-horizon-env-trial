@@ -12,11 +12,11 @@ from fastapi.responses import JSONResponse
 
 from model_runners.registry import ProviderRegistry
 from model_runners.configuration import RuntimeProviderSettings
-
 from .api.routes import build_router
 from .orchestration import EvaluationOrchestrator
 from .persistence import EvaluationStore
 from .settings import Settings, dashboard_origins
+from .talon_lazy import LazyTalonMiddleware, LazyTalonService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -31,11 +31,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         state_path=provider_state_path,
     )
     orchestrator = EvaluationOrchestrator(store, registry)
+    talon_service = LazyTalonService(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store.mark_active_interrupted()
         yield
+        await talon_service.close()
         store.close()
 
     app = FastAPI(
@@ -45,13 +47,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.store = store
     app.state.orchestrator = orchestrator
     app.state.registry = registry
+    app.state.talon_service = talon_service
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(dashboard_origins(settings.dashboard_origin)),
         allow_credentials=False,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Last-Event-ID"],
+        allow_headers=["Content-Type", "Last-Event-ID", "Idempotency-Key"],
     )
+    app.add_middleware(LazyTalonMiddleware, service=talon_service)
 
     @app.middleware("http")
     async def protect_local_control_responses(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -79,6 +83,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(status_code=500, content={"error": {"code": "internal_error", "message": "the evaluation service could not complete the request"}})
 
     app.include_router(build_router(store, orchestrator, registry, settings))
+
+    @app.get("/api/health/components")
+    async def component_health() -> dict[str, object]:
+        return {
+            "status": "ok",
+            "frontier": {"status": "available"},
+            "talon": talon_service.component_health(),
+        }
+
     return app
 
 

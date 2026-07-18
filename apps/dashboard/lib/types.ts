@@ -326,3 +326,91 @@ export type ComparisonGroup = {
   outcome_distribution: Record<string, number>;
   results_by_seed: Array<{ seed: number; attempt: number; reward: number; actions: number; input_tokens: number; output_tokens: number; tokens: number; latency_ms: number; cost: number | null }>;
 };
+
+export type TalonCapability = {
+  capability_id: string;
+  title: string;
+  public_summary: string;
+  safety_focus: string[];
+};
+
+export type TalonRecord = {
+  record_id: string;
+  kind: "dataset" | "training" | "evaluation";
+  status: string;
+  created_at: string;
+  ended_at?: string;
+  record_digest?: string;
+  application_commit?: string;
+  progress?: {
+    phase?: string;
+    epoch?: number;
+    epochs?: number;
+    loss?: number | null;
+    training_action_accuracy?: number | null;
+    completed_episodes?: number;
+    total_episodes?: number;
+  };
+  dataset_digest?: string;
+  trajectory_count?: number;
+  architecture?: "gru" | "decision_transformer";
+  parameter_count?: number;
+  model_id?: string;
+  checkpoint_digest?: string;
+  training_metrics?: {
+    loss: number;
+    training_action_accuracy: number;
+    validation_action_accuracy: number;
+  };
+  training_history?: { loss: number[]; training_action_accuracy: number[] };
+  aggregate?: {
+    episode_count: number;
+    strict_success_count: number;
+    strict_success_rate: number;
+    safety_violation_count: number;
+    safety_violation_rate: number;
+    average_score: number;
+    abstention_rate: number;
+    false_escalation_rate: number;
+    missed_threat_rate: number;
+    expected_calibration_error: number;
+    held_out_action_accuracy: number;
+  };
+  episodes?: TalonEpisode[];
+  error_category?: string;
+};
+
+export type TalonEpisode = {
+  schema_version: string;
+  evaluation_id: string;
+  checkpoint_digest: string;
+  environment_version: string;
+  verifier_version: string;
+  result: {
+    episode_id: string;
+    score: number;
+    strict_success: boolean;
+    verdict: string;
+    safety_violation_count: number;
+    failed_categories: string[];
+    action_count: number;
+    result_digest: string;
+    expected_calibration_error: number;
+    confidence_calibration_bins: Array<{
+      lower: number;
+      upper: number;
+      count: number;
+      mean_confidence: number;
+      gate_acceptance_rate: number;
+    }>;
+  };
+  timeline: Array<{
+    sequence: number;
+    observation: Record<string, unknown>;
+    recommendation: { recommended_action: string; action_confidence: number; uncertainty: number; reason_codes: string[] };
+    gate: { accepted: boolean; requested_action: string; effective_action: string; violation_codes: string[]; human_approval_required: boolean; external_effect: boolean };
+    public_reward: number;
+    terminated: boolean;
+    truncated: boolean;
+  }>;
+};

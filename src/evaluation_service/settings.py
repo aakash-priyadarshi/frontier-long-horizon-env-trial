@@ -28,6 +28,9 @@ class Settings:
     dashboard_origin: str = "http://localhost:3000"
     local_env_path: Path | None = None
     provider_state_path: Path | None = None
+    talon_data_dir: Path | None = None
+    talon_database_path: Path | None = None
+    talon_retention_days: int = 0
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -41,4 +44,9 @@ class Settings:
             provider_state_path=Path(
                 os.getenv("FRONTIER_PROVIDER_STATE_PATH", data_dir / "provider-state.json")
             ),
+            talon_data_dir=Path(os.getenv("TALON_DATA_DIR", data_dir / "talon")),
+            talon_database_path=Path(
+                os.getenv("TALON_DATABASE_PATH", data_dir / "talon" / "talon.sqlite3")
+            ),
+            talon_retention_days=max(0, int(os.getenv("TALON_RETENTION_DAYS", "0"))),
         )

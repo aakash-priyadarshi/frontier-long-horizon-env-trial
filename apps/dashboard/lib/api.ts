@@ -12,7 +12,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     cache: "no-store",
   });
-  const body = await response.json();
+  const body = response.status === 204 ? undefined : await response.json();
   if (!response.ok) {
     throw new APIRequestError(body?.error?.code ?? "request_failed", body?.error?.message ?? "Request failed", response.status);
   }

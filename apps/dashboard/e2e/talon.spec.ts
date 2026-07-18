@@ -1,0 +1,133 @@
+import { expect, test, type APIRequestContext } from "@playwright/test";
+
+const api = process.env.FRONTIER_API_URL ?? "http://127.0.0.1:8000";
+const controlHeaders = { Origin: "http://localhost:3000" };
+let datasetId = "";
+let trainingId = "";
+let evaluationId = "";
+
+async function waitForRecord(request: APIRequestContext, path: string, timeout = 120_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const response = await request.get(`${api}${path}`);
+    const record = await response.json();
+    if (["completed", "failed", "cancelled", "interrupted", "timed_out"].includes(record.status)) return record;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error("Talon record did not settle");
+}
+
+test.describe.serial("real Talon simulation journeys", () => {
+  test.setTimeout(180_000);
+
+  test("1. landing and capability catalogue disclose no private episode labels", async ({ page }) => {
+    await page.goto("/talon");
+    await expect(page.getByRole("heading", { name: "Policy-aware decision training" })).toBeVisible();
+    await expect(page.getByText("Simulation-only decision support")).toBeVisible();
+    await page
+      .getByRole("navigation", { name: "Talon simulation navigation" })
+      .getByRole("link", { name: "Scenarios" })
+      .click();
+    await expect(page).toHaveURL(/\/talon\/scenarios$/);
+    await expect(page.getByRole("heading", { name: "Public decision capabilities" })).toBeVisible();
+    const body = await page.locator("body").innerText();
+    expect(body).not.toMatch(/authorised_inspection|perimeter_probing|paired member|expected_action/i);
+    expect(body).not.toMatch(/jammer|intercept aircraft|disable aircraft|weapon control/i);
+  });
+
+  test("2. dataset generation uses a real private worker", async ({ page, request }) => {
+    await page.goto("/talon/datasets");
+    await page.getByLabel("Seed-domain size").fill("1");
+    await page.getByRole("button", { name: "Generate" }).click();
+    await expect(page.getByRole("table", { name: "Safe Talon dataset records" })).toBeVisible();
+    const records = await (await request.get(`${api}/api/drone/datasets`)).json();
+    datasetId = records.items[0].record_id;
+    const settled = await waitForRecord(request, `/api/drone/datasets/${datasetId}`);
+    expect(settled.status).toBe("completed");
+    expect(JSON.stringify(settled)).not.toMatch(/trajectories|expert_action|scenario_family|instance_digest/i);
+  });
+
+  test("3. training cancellation stops its worker and emits one outcome", async ({ request }) => {
+    const created = await request.post(`${api}/api/drone/training-runs`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-cancel-${Date.now()}` },
+      data: { dataset_id: datasetId, architecture: "gru", epochs: 500, batch_size: 32, context_length: 8, timeout_seconds: 120 },
+    });
+    const id = (await created.json()).training_run_id;
+    await request.post(`${api}/api/drone/training-runs/${id}/cancel`, { headers: controlHeaders, data: {} });
+    const settled = await waitForRecord(request, `/api/drone/training-runs/${id}`);
+    expect(settled.status).toBe("cancelled");
+    expect(settled.checkpoint_digest).toBeUndefined();
+  });
+
+  test("4. training progress produces a digest-bound model", async ({ page, request }) => {
+    const created = await request.post(`${api}/api/drone/training-runs`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-train-${Date.now()}` },
+      data: { dataset_id: datasetId, architecture: "gru", epochs: 1, batch_size: 64, context_length: 8, timeout_seconds: 90 },
+    });
+    trainingId = (await created.json()).training_run_id;
+    await page.goto(`/talon/training/${trainingId}`);
+    await expect(page.getByText("Simulation-only decision support")).toBeVisible();
+    const settled = await waitForRecord(request, `/api/drone/training-runs/${trainingId}`);
+    expect(settled.status).toBe("completed");
+    await page.reload();
+    await expect(page.getByText("Digest-bound")).toBeVisible();
+    await expect(page.getByText("In-sample; not held-out safety")).toBeVisible();
+  });
+
+  test("5. live evaluation timeline streams real public actions", async ({ page, request }) => {
+    const created = await request.post(`${api}/api/drone/evaluations`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-eval-${Date.now()}` },
+      data: { training_run_id: trainingId, seed_count: 1, timeout_seconds: 120 },
+    });
+    evaluationId = (await created.json()).evaluation_id;
+    await page.goto(`/talon/evaluations/${evaluationId}`);
+    await expect(page.getByRole("heading", { name: /ep_[a-f0-9]{24}/ })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("table", { name: "Live public recommendation and policy-gate timeline" })).toBeVisible();
+    const settled = await waitForRecord(request, `/api/drone/evaluations/${evaluationId}`, 150_000);
+    expect(settled.status).toBe("completed");
+    expect(settled.aggregate.episode_count).toBe(15);
+  });
+
+  test("6. valid approval and replay falsification use the real authority", async ({ page }) => {
+    await page.goto("/talon/policy");
+    await page.getByRole("button", { name: "Run valid approval demo" }).click();
+    await expect(page.getByText("First use accepted")).toBeVisible();
+    await expect(page.getByText(/Approval consumed once.*External effect: false/)).toBeVisible();
+    await expect(page.getByText(/Gate rejection:.*fresh_sensor_confirmation_required.*External effect: false/)).toBeVisible();
+    await page.getByRole("button", { name: "Test replay rejection" }).click();
+    await expect(page.getByText(/Replay rejected: approval_already_consumed/)).toBeVisible();
+  });
+
+  test("7. safe export contains no private labels or predicate internals", async ({ request }) => {
+    const response = await request.get(`${api}/api/drone/exports/${evaluationId}.json`);
+    expect(response.ok()).toBeTruthy();
+    const text = await response.text();
+    expect(text).not.toMatch(/scenario_family|instance_digest|expert_action|failed_predicate|actual_object|true_intent/i);
+    expect(text).not.toMatch(/api[_-]?key|bearer\s|capability_token|chain.of.thought/i);
+  });
+
+  test("8. calibration chart has an accessible table alternative", async ({ page }) => {
+    await page.goto(`/talon/evaluations/${evaluationId}`);
+    await expect(page.locator("main").getByRole("heading", { name: "Confidence calibration" }).first()).toBeVisible();
+    await page.getByText("Accessible data table").click();
+    await expect(page.getByRole("table", { name: "Confidence calibration data" })).toBeVisible();
+    expect(await page.locator("body").innerText()).not.toMatch(/failed_predicate|scenario family/i);
+  });
+
+  test("9. reduced motion remains operable with no physical-response controls", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/talon/policy");
+    await expect(page.getByRole("heading", { name: "Policy gate" })).toBeVisible();
+    await expect(page.getByText("REQUEST_COMMAND_LINK_VERIFICATION")).toBeVisible();
+    await expect(page.getByText(/Command-link state requires the dedicated verification action/)).toBeVisible();
+    await expect(page.getByText("None · recommendation only").first()).toBeVisible();
+    expect(await page.getByRole("button").allTextContents()).not.toEqual(expect.arrayContaining([expect.stringMatching(/engage|disable|jam|intercept/i)]));
+  });
+
+  test("10. component-unavailable state is bounded and Frontier navigation remains", async ({ page }) => {
+    await page.route("**/api/drone/health", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "talon_service_unavailable", message: "the optional Talon component is temporarily unavailable" } }) }));
+    await page.goto("/talon");
+    await expect(page.getByText("the optional Talon component is temporarily unavailable")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
+  });
+});

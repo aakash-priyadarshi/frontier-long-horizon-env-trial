@@ -3,6 +3,67 @@
 All notable V2 evaluation-dashboard changes are documented here. The frozen V1
 environment, strict scoring contract, and `trial-submission-v1` tag are unchanged.
 
+## [Talon Milestone 1 - Unreleased] - 2026-07-17
+
+### Added
+
+- A separate simulation-only `drone_decision_ground` package with versioned
+  structured observations, thirteen abstract recommendation actions, including a
+  dedicated causal command-link verification request, explicit
+  authority profiles, deterministic fake time, and a policy gate whose outputs
+  always have `external_effect=false`.
+- Fifteen deterministic privileged scenario profiles with unique behavioral
+  signatures, causal evidence requests, meaningful partition/seed variation,
+  multi-track and command-link transitions, and matched early public observations
+  for a hidden pair. Public APIs expose only five generic capability groups.
+- A separate `drone_decision_verifier` with strict semantic predicates, explicit
+  non-compensable safety costs, canonical result digests, and scripted safe,
+  over-escalation, under-escalation, skipped-authority, stale-track, and
+  public-only negative controls.
+- Versioned private expert trajectories and genuinely disjoint train, validation,
+  and evaluation domains, with training-only normalization, canonical instance
+  digests, checkpoint overlap rejection, authoritative full-dataset digest
+  recomputation on every load, and digest-bound private manifests.
+- A multi-head GRU behaviour-cloning policy and a causal Decision Transformer with
+  action, threat, uncertainty, and missing-evidence supervision, canonical
+  return-to-go, process/per-run RNG isolation, deterministic local training, atomic digest-checked checkpoints, and
+  separately reported frozen validation/held-out accuracy. The unsupported
+  `policy_risk` head and claim were removed.
+- A privileged `python -m drone_training` CLI for dataset generation, GRU/Decision
+  Transformer training, evaluation, and checkpoint inspection, with authoritative
+  spawned-process timeouts.
+- Additive loopback-only FastAPI routes under `/api/drone`, lazy Talon initialization,
+  separate public SQLite/private artifact storage, payload-bound idempotency,
+  killable job workers, immutable terminal records, live/replayable SSE, explicit
+  export allowlists, dependency-safe deletion, restart recovery, and opt-in local
+  retention.
+- A separate `/talon` dashboard area for generic capabilities, policy/approval
+  boundaries, datasets, live training, models, live strict evaluation timelines,
+  safe export/deletion, comparisons, and accessible chart tables, with no
+  physical-response UI or private scenario labels.
+- Talon-focused environment, gate, scenario, verifier, dataset, model, checkpoint,
+  persistence, API, SSE, and dashboard regression tests.
+
+### Security
+
+- The policy gate remains active during scripted and learned evaluation and cannot
+  create an external effect. Response recommendations require sufficient evidence,
+  permitted authority, operator availability, and human approval.
+- One-time approvals are unpredictable, integrity-protected, expiring, atomically
+  consumed, and bound to episode, active track, requested action, policy version,
+  authority scope, and state revision.
+- Evaluated policies run under `python -I` from a weight-only bundle after repository
+  paths, metadata environment variables, filesystem access, and package listing are
+  removed. Executable probes confirm privileged imports and paths are unavailable.
+- Model-visible observations, policy inputs, public rewards, SSE, SQLite records,
+  dashboard payloads, and reviewer exports reject hidden keys and values. Hidden
+  truth, expert labels, and full predicates remain in privileged private artifacts.
+- Cancellation/timeout terminate worker processes before a single terminal event;
+  failed jobs cannot publish partial checkpoints. Checkpoint creation is fsync'd,
+  validated, atomically published, digest-bound, and immutable.
+- Milestone 1 intentionally excludes raw video, online RL, live sensors, physical
+  mechanisms, autonomous response, operational deployment, and explanation LLMs.
+
 ## [Unreleased] - 2026-07-16
 
 ### Added

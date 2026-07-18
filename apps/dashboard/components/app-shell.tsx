@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Activity, BarChart3, FlaskConical, Gauge, History, Menu, Moon, Settings, Sun, X } from "lucide-react";
+import { Activity, BarChart3, FlaskConical, Gauge, History, Menu, Moon, Radar, Settings, Sun, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Batch } from "@/lib/types";
 import { MotionButton, PageTransition, SharedSelectionIndicator, motionTransition } from "@/components/motion";
@@ -14,6 +14,7 @@ const links = [
   { href: "/evaluations/new", label: "New evaluation", icon: FlaskConical },
   { href: "/runs", label: "Runs", icon: History },
   { href: "/compare", label: "Compare", icon: BarChart3 },
+  { href: "/talon", label: "Talon simulation", icon: Radar },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -63,6 +64,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const reduce = useReducedMotion();
   const [open, setOpen] = useState(false);
+  const talon = pathname.startsWith("/talon");
 
   useEffect(() => { setOpen(false); }, [pathname]);
   useEffect(() => {
@@ -101,7 +103,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <section className="main-column">
         <header className="topbar">
           <MotionButton className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setOpen(true)}><Menu size={18} aria-hidden="true" /></MotionButton>
-          <div className="topbar-context"><span className="eyebrow">Model evaluation</span><span className="authority-pill">Strict verifier authority</span></div>
+          <div className="topbar-context"><span className="eyebrow">{talon ? "Talon decision lab" : "Model evaluation"}</span><span className="authority-pill">{talon ? "Simulation · human approval" : "Strict verifier authority"}</span></div>
           <div className="topbar-actions"><GlobalRunStatus /><ThemeToggle /></div>
         </header>
         <main id="main-content" className="page" tabIndex={-1}>
