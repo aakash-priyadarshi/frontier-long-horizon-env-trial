@@ -8,7 +8,7 @@ training package, application, or repository.
 from __future__ import annotations
 
 import builtins
-import importlib.util
+import importlib
 import io
 import json
 import os
@@ -218,27 +218,76 @@ for raw in sys.stdin:
             emit({"type": "reset"})
             continue
         if kind == "probe":
-            blocked = []
-            for name in ("drone_decision_verifier", "drone_decision_verifier.hidden_scenarios", "drone_training.datasets"):
+            import_results = {}
+            for name in (
+                "drone_decision_ground",
+                "drone_training",
+                "drone_decision_verifier",
+                "drone_decision_verifier.hidden_scenarios",
+            ):
                 try:
-                    blocked.append(importlib.util.find_spec(name) is None)
-                except (ImportError, AttributeError, ValueError):
-                    blocked.append(True)
-            source_visible = any((Path(entry) / "drone_decision_verifier").exists() for entry in sys.path if entry)
+                    importlib.import_module(name)
+                    import_results[name] = False
+                except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
+                    import_results[name] = True
+            source_visible = any(
+                any(
+                    (Path(entry) / package).exists()
+                    for package in (
+                        "drone_decision_ground",
+                        "drone_training",
+                        "drone_decision_verifier",
+                    )
+                )
+                for entry in sys.path
+                if entry
+            )
             metadata_env = any(any(token in key.upper() for token in ("TALON", "SCENARIO", "VERIFIER", "SECRET")) for key in os.environ)
-            try:
-                builtins.open("hidden_scenarios.py", "rb")
-                file_access_blocked = False
-            except PermissionError:
-                file_access_blocked = True
+            filesystem_results = {}
+            for name, path in (
+                ("privileged_source_read_blocked", "src/drone_decision_ground/actions.py"),
+                ("private_dataset_read_blocked", ".frontier/talon/private/dataset.json"),
+                ("verifier_storage_read_blocked", "src/drone_decision_verifier/hidden_scenarios.py"),
+            ):
+                try:
+                    builtins.open(path, "rb")
+                    filesystem_results[name] = False
+                except PermissionError:
+                    filesystem_results[name] = True
             try:
                 os.listdir(".")
                 listing_blocked = False
             except PermissionError:
                 listing_blocked = True
             arguments_safe = len(sys.argv) == 1 and not any(token in " ".join(sys.argv).lower() for token in ("scenario", "verifier", "family", "digest"))
-            emit({"type": "probe", "privileged_imports_blocked": all(blocked), "privileged_source_absent": not source_visible, "metadata_environment_absent": not metadata_env, "filesystem_reads_blocked": file_access_blocked, "package_listing_blocked": listing_blocked, "process_arguments_safe": arguments_safe})
+            emit(
+                {
+                    "type": "probe",
+                    "python_isolated": sys.flags.isolated == 1,
+                    "simulator_import_blocked": import_results["drone_decision_ground"],
+                    "training_import_blocked": import_results["drone_training"],
+                    "verifier_import_blocked": import_results["drone_decision_verifier"],
+                    "hidden_scenario_import_blocked": import_results[
+                        "drone_decision_verifier.hidden_scenarios"
+                    ],
+                    "privileged_source_absent": not source_visible,
+                    "metadata_environment_absent": not metadata_env,
+                    **filesystem_results,
+                    "package_listing_blocked": listing_blocked,
+                    "process_arguments_safe": arguments_safe,
+                }
+            )
             continue
+        if kind == "probe_oversized_output":
+            emit({"type": "probe", "payload": "x" * (MAX_MESSAGE_BYTES + 1)})
+            continue
+        if kind == "probe_malformed_output":
+            sys.stdout.write("{\n")
+            sys.stdout.flush()
+            continue
+        if kind == "probe_timeout":
+            while True:
+                pass
         if kind != "recommend" or set(message) != {"type", "observation"}:
             raise ValueError("invalid protocol message")
         observation = message["observation"]

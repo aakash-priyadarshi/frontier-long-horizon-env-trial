@@ -135,14 +135,51 @@ class IsolatedPolicyClient:
         return {
             key: bool(result[key])
             for key in (
-                "privileged_imports_blocked",
+                "python_isolated",
+                "simulator_import_blocked",
+                "training_import_blocked",
+                "verifier_import_blocked",
+                "hidden_scenario_import_blocked",
                 "privileged_source_absent",
                 "metadata_environment_absent",
-                "filesystem_reads_blocked",
+                "privileged_source_read_blocked",
+                "private_dataset_read_blocked",
+                "verifier_storage_read_blocked",
                 "package_listing_blocked",
                 "process_arguments_safe",
             )
         }
+
+    def protocol_fault_probe(self, probe: str) -> dict[str, bool]:
+        """Exercise bounded protocol faults without exposing worker internals."""
+
+        try:
+            if probe == "malformed_output":
+                self._send({"type": "probe_malformed_output"})
+            elif probe == "oversized_output":
+                self._send({"type": "probe_oversized_output"})
+            elif probe == "timeout":
+                self._send({"type": "probe_timeout"})
+            else:
+                raise ValueError("unknown isolation protocol probe")
+        except PolicyIsolationError as exc:
+            public_error = str(exc).lower()
+            forbidden = (
+                "drone_decision",
+                "hidden_scenario",
+                "strict_verifier",
+                ".frontier",
+                "private dataset",
+                "approval",
+                "hmac",
+            )
+            return {
+                "rejected": True,
+                "public_error_sanitized": not any(
+                    fragment in public_error for fragment in forbidden
+                ),
+            }
+        return {"rejected": False, "public_error_sanitized": False}
 
     def close(self, *, force: bool = False) -> None:
         if getattr(self, "_process", None) is not None and self._process.poll() is None:

@@ -82,6 +82,16 @@ Without `--check-only`, it refuses a dirty tree and may write a source-bound rec
 Do not generate that receipt until a clean source commit has passed independent
 review.
 
+The receipt imports the authoritative action and private-dataset schema identifiers,
+runs the Talon, Frontier, and complete Playwright suites sequentially in real Chromium,
+and records their independent counts and skipped-test totals. It also executes bounded
+`python -I` policy-worker import, filesystem, malformed-output, oversized-output, and
+timeout probes. Git-integrity checks compare the original Frontier scoring packages and
+each pre-existing Frontier evidence file with the parent of the commit that introduced
+Talon; the new Talon receipt is explicitly excluded from the pre-existing evidence set.
+Learned GRU and Decision Transformer runs remain smoke baselines and are not claimed to
+be safety ready.
+
 ## Deferred
 
 Online reinforcement learning, raw or live sensors, real-world authority workflows,

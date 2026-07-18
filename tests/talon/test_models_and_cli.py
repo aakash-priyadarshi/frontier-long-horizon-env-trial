@@ -176,6 +176,15 @@ def test_atomic_checkpoint_and_isolated_frozen_evaluation(tmp_path: Path, archit
     before = checkpoint.read_bytes()
     with IsolatedPolicyClient(checkpoint, expected_digest=digest) as policy:
         assert all(policy.probe().values())
+    for probe in ("malformed_output", "oversized_output", "timeout"):
+        with IsolatedPolicyClient(
+            checkpoint,
+            expected_digest=digest,
+            timeout_seconds=5.0,
+        ) as policy:
+            if probe == "timeout":
+                policy.timeout_seconds = 0.25
+            assert all(policy.protocol_fault_probe(probe).values())
     evaluation = evaluate_checkpoint(
         checkpoint,
         family="bird_false_positive",
