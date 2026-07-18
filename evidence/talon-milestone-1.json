@@ -1,0 +1,293 @@
+{
+  "browser_verification": {
+    "browser": "chromium",
+    "classification": "dynamically_executed_real_browser",
+    "component_count_consistent": true,
+    "execution": "real_browser_not_mocked",
+    "frontier": {
+      "duration_seconds": 39.234,
+      "journey_count": 12,
+      "skipped_count": 0,
+      "verification_name": "frontier_playwright"
+    },
+    "passed": true,
+    "talon": {
+      "duration_seconds": 29.656,
+      "journey_count": 10,
+      "skipped_count": 0,
+      "verification_name": "talon_playwright"
+    },
+    "total": {
+      "duration_seconds": 62.563,
+      "journey_count": 22,
+      "skipped_count": 0,
+      "verification_name": "dashboard_playwright"
+    }
+  },
+  "deferred": [
+    "online reinforcement learning",
+    "hardware or live sensor integration",
+    "external response controls",
+    "operational deployment"
+  ],
+  "dynamic_contract": {
+    "checks": {
+      "action_vocabulary_is_abstract": true,
+      "approval_expiry_rejected": true,
+      "approval_first_use": true,
+      "approval_replay_rejected": true,
+      "command_link_requires_dedicated_request": true,
+      "dataset_digest_authoritatively_recomputed": true,
+      "dataset_mutation_rejected": true,
+      "paired_early_indistinguishability": true,
+      "partition_expert_difference": true,
+      "partition_instance_disjointness": true,
+      "partition_transition_difference": true,
+      "public_reset_step_leak_isolation": true,
+      "public_reward_non_probing": true,
+      "return_to_go_correct": true,
+      "scenario_signature_uniqueness": true,
+      "semantic_negative_controls": true,
+      "semantic_positive_flexibility": true,
+      "zero_missing_features_distinct": true
+    },
+    "negative_control_count": 6,
+    "passed": true,
+    "positive_control_count": 2,
+    "public_leak_findings": [],
+    "scenario_count": 15
+  },
+  "frontier_regression": {
+    "baseline_sha": "0c38af54ce18323febdc86fedba34b85fc862b86",
+    "classification": "git_integrity_and_executed_regression",
+    "evidence_integrity": {
+      "checked_pre_existing_files": [
+        "evidence/final-environment.json",
+        "evidence/milestone-1-substrate.json",
+        "evidence/milestone-2-interaction-layer.json",
+        "evidence/v2-model-evaluation-dashboard.json"
+      ],
+      "classification": "git_integrity_verified",
+      "passed": true,
+      "pre_existing_frontier_evidence_unchanged": true,
+      "talon_receipt_excluded_as_new_evidence": "evidence/talon-milestone-1.json"
+    },
+    "passed": true,
+    "playwright": {
+      "classification": "dynamically_executed_real_browser",
+      "journey_count": 12,
+      "passed": true,
+      "skipped_count": 0,
+      "verification_name": "frontier_playwright"
+    },
+    "python_tests": {
+      "classification": "executed_with_complete_python_suite",
+      "passed": true,
+      "verification_name": "full_python_regression"
+    },
+    "source_commit": "47aed9b1a1f662af5b11452d17a132609d0f2dce",
+    "source_integrity": {
+      "checked_paths": [
+        "src/training_ground",
+        "src/strict_verifier"
+      ],
+      "classification": "git_integrity_verified",
+      "passed": true,
+      "strict_verifier_unchanged": true,
+      "training_ground_unchanged": true
+    }
+  },
+  "learned_model_claims": {
+    "classification": "scope_statement",
+    "safety_ready": false,
+    "smoke_baselines_only": true
+  },
+  "passed": true,
+  "physical_boundary": {
+    "abstract_vocabulary": true,
+    "action_count": 13,
+    "external_effect_default_false": true,
+    "highest_action_is_abstract_recommendation": true,
+    "passed": true,
+    "suspicious_implementation_lines": []
+  },
+  "policy_worker_isolation": {
+    "checks": {
+      "hidden_scenario_import_blocked": true,
+      "malformed_output_public_error_sanitized": true,
+      "malformed_output_rejected": true,
+      "metadata_environment_absent": true,
+      "oversized_output_public_error_sanitized": true,
+      "oversized_output_rejected": true,
+      "package_listing_blocked": true,
+      "private_dataset_read_blocked": true,
+      "privileged_source_absent": true,
+      "privileged_source_read_blocked": true,
+      "process_arguments_safe": true,
+      "public_errors_sanitized": true,
+      "python_isolated": true,
+      "simulator_import_blocked": true,
+      "timeout_public_error_sanitized": true,
+      "timeout_rejected": true,
+      "training_import_blocked": true,
+      "verifier_import_blocked": true,
+      "verifier_storage_read_blocked": true
+    },
+    "classification": "dynamically_executed",
+    "passed": true,
+    "raw_probe_output_retained": false
+  },
+  "schema_version": "talon.milestone-1-evidence/3.0",
+  "schema_versions": {
+    "action_schema_version": "talon.action/3.0",
+    "checks": {
+      "action_schema_matches_expected": true,
+      "private_dataset_schema_matches_expected": true
+    },
+    "classification": "runtime_import_and_static_assertion",
+    "passed": true,
+    "private_dataset_schema_version": "talon.private-dataset/3.0",
+    "sources": {
+      "action": "drone_decision_ground.actions.ACTION_SCHEMA_VERSION",
+      "private_dataset": "drone_training.datasets.DATASET_SCHEMA_VERSION"
+    }
+  },
+  "scope": {
+    "decision_support_only": true,
+    "external_effect": false,
+    "human_approval_mandatory": true,
+    "simulation_only": true
+  },
+  "source_commit": "47aed9b1a1f662af5b11452d17a132609d0f2dce",
+  "test_counts": {
+    "complete_python": 446,
+    "dashboard_unit": 48,
+    "playwright_frontier": 12,
+    "playwright_talon": 10,
+    "playwright_total": 22,
+    "talon_python": 88
+  },
+  "timestamp": "2026-07-18T15:49:20.871028+00:00",
+  "verification": [
+    {
+      "classification": "real",
+      "command": "uv run --extra talon --extra test python -m pytest tests/talon -q",
+      "duration_seconds": 73.296,
+      "exit_code": 0,
+      "name": "talon_python",
+      "passed": true,
+      "test_count": 88
+    },
+    {
+      "classification": "real",
+      "command": "uv run --extra talon --extra test python -m pytest tests -q",
+      "duration_seconds": 337.547,
+      "exit_code": 0,
+      "name": "full_python_regression",
+      "passed": true,
+      "test_count": 446
+    },
+    {
+      "classification": "real",
+      "command": "npm test -- --run",
+      "duration_seconds": 7.844,
+      "exit_code": 0,
+      "name": "dashboard_unit",
+      "passed": true,
+      "test_count": 48
+    },
+    {
+      "classification": "static",
+      "command": "npm run lint",
+      "duration_seconds": 10.828,
+      "exit_code": 0,
+      "name": "dashboard_lint",
+      "passed": true,
+      "test_count": 0
+    },
+    {
+      "classification": "static",
+      "command": "npm run typecheck",
+      "duration_seconds": 2.485,
+      "exit_code": 0,
+      "name": "dashboard_typecheck",
+      "passed": true,
+      "test_count": 0
+    },
+    {
+      "classification": "real",
+      "command": "npm run build",
+      "duration_seconds": 23.5,
+      "exit_code": 0,
+      "name": "dashboard_build",
+      "passed": true,
+      "test_count": 0
+    },
+    {
+      "browser": "chromium",
+      "classification": "real_browser",
+      "command": "npm run test:e2e -- --browser=chromium --reporter=json e2e/talon.spec.ts",
+      "duration_seconds": 29.656,
+      "executed_count": 10,
+      "exit_code": 0,
+      "name": "talon_playwright",
+      "passed": true,
+      "skipped_count": 0,
+      "spec": "e2e/talon.spec.ts",
+      "test_count": 10
+    },
+    {
+      "browser": "chromium",
+      "classification": "real_browser",
+      "command": "npm run test:e2e -- --browser=chromium --reporter=json e2e/scripted-evaluation.spec.ts",
+      "duration_seconds": 39.234,
+      "executed_count": 12,
+      "exit_code": 0,
+      "name": "frontier_playwright",
+      "passed": true,
+      "skipped_count": 0,
+      "spec": "e2e/scripted-evaluation.spec.ts",
+      "test_count": 12
+    },
+    {
+      "browser": "chromium",
+      "classification": "real_browser",
+      "command": "npm run test:e2e -- --browser=chromium --reporter=json",
+      "duration_seconds": 62.563,
+      "executed_count": 22,
+      "exit_code": 0,
+      "name": "dashboard_playwright",
+      "passed": true,
+      "skipped_count": 0,
+      "spec": "e2e",
+      "test_count": 22
+    },
+    {
+      "classification": "dependency_scan",
+      "command": "npm audit --audit-level=high",
+      "duration_seconds": 1.718,
+      "exit_code": 0,
+      "name": "npm_audit",
+      "passed": true,
+      "test_count": 0
+    },
+    {
+      "classification": "dependency_scan",
+      "command": "uv lock --check",
+      "duration_seconds": 0.047,
+      "exit_code": 0,
+      "name": "uv_lock",
+      "passed": true,
+      "test_count": 0
+    },
+    {
+      "classification": "static",
+      "command": "git diff --check",
+      "duration_seconds": 0.078,
+      "exit_code": 0,
+      "name": "diff_check",
+      "passed": true,
+      "test_count": 0
+    }
+  ]
+}
