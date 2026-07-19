@@ -43,7 +43,7 @@ Object.defineProperty(HTMLDialogElement.prototype, "close", { value: function cl
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/",
-  useParams: () => ({ batchId: "batch-test", runId: "run-test", evaluationId: "talon-eval-test" }),
+  useParams: () => ({ batchId: "batch-test", runId: "run-test", evaluationId: "talon-eval-test", episodeId: `ep_${"a".repeat(24)}` }),
   useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
   useSearchParams: () => ({ getAll: () => [], get: () => null }),
 }));

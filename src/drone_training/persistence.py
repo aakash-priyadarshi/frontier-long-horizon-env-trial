@@ -106,6 +106,12 @@ class TalonStore:
                     state TEXT NOT NULL,
                     planned_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS talon_checkpoint_health (
+                    record_id TEXT PRIMARY KEY,
+                    available INTEGER NOT NULL,
+                    reason TEXT,
+                    checked_at TEXT NOT NULL
+                );
                 """
             )
             current = self._connection.execute(
@@ -237,6 +243,55 @@ class TalonStore:
     def finalize(self, record_id: str, status: str, result: dict[str, Any]) -> str:
         if status not in TERMINAL_STATUSES:
             raise ValueError("final Talon status must be terminal")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT status FROM talon_records WHERE record_id=?", (record_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(record_id)
+            if row["status"] in TERMINAL_STATUSES:
+                raise TalonImmutableRecordError("terminal Talon records are immutable")
+        digest = self._try_finalize(
+            record_id,
+            status,
+            result,
+            expected_statuses=ACTIVE_STATUSES,
+        )
+        if digest is None:
+            raise TalonImmutableRecordError("another terminal outcome won the race")
+        return digest
+
+    def try_complete_with_checkpoint(
+        self,
+        record_id: str,
+        *,
+        result: dict[str, Any],
+        expected_statuses: frozenset[str] | None = None,
+    ) -> str | None:
+        """Compare-and-set a run to ``completed`` with checkpoint metadata.
+
+        Succeeds only when the current status is in ``expected_statuses``
+        (default: all active statuses, including ``cancelling``). A worker that
+        already published after its own cancel re-check can therefore still win
+        over soft-cancel. Returns the record digest on success, or ``None`` when
+        a terminal outcome already won / the status is outside the expected set.
+        """
+
+        allowed = ACTIVE_STATUSES if expected_statuses is None else frozenset(expected_statuses)
+        if not allowed:
+            raise ValueError("expected_statuses must not be empty")
+        if allowed - ACTIVE_STATUSES:
+            raise ValueError("expected_statuses may only include active Talon statuses")
+        return self._try_finalize(record_id, "completed", result, expected_statuses=allowed)
+
+    def _try_finalize(
+        self,
+        record_id: str,
+        status: str,
+        result: dict[str, Any],
+        *,
+        expected_statuses: frozenset[str],
+    ) -> str | None:
         assert_public_safe(result)
         with self._lock, self._connection:
             row = self._connection.execute(
@@ -245,7 +300,9 @@ class TalonStore:
             if row is None:
                 raise KeyError(record_id)
             if row["status"] in TERMINAL_STATUSES:
-                raise TalonImmutableRecordError("terminal Talon records are immutable")
+                return None
+            if row["status"] not in expected_statuses:
+                return None
             payload = json.loads(row["payload_json"])
             payload.update(result)
             payload["status"] = status
@@ -260,13 +317,15 @@ class TalonStore:
                 # authority, so the orphan cannot be treated as terminal.
                 artifact.unlink()
             write_immutable_json(artifact, payload)
+            placeholders = ",".join("?" for _ in expected_statuses)
             cursor = self._connection.execute(
-                "UPDATE talon_records SET status=?,updated_at=?,payload_json=?,digest=? WHERE record_id=? AND status NOT IN ('completed','failed','cancelled','interrupted','timed_out')",
-                (status, utc_now(), canonical_json(payload), record_digest, record_id),
+                f"UPDATE talon_records SET status=?,updated_at=?,payload_json=?,digest=? "
+                f"WHERE record_id=? AND status IN ({placeholders})",
+                (status, utc_now(), canonical_json(payload), record_digest, record_id, *sorted(expected_statuses)),
             )
             if cursor.rowcount != 1:
                 artifact.unlink(missing_ok=True)
-                raise TalonImmutableRecordError("another terminal outcome won the race")
+                return None
             return record_digest
 
     def write_private_artifact(self, record_id: str, name: str, payload: dict[str, Any]) -> str:
@@ -303,6 +362,11 @@ class TalonStore:
             if payload.get("payload_digest") != content_digest(payload_without_digests):
                 raise TalonImmutableRecordError("Talon terminal payload digest is corrupt")
         assert_public_safe(payload)
+        if payload.get("kind") == "training" and payload.get("status") == "completed":
+            # Health is stored outside the immutable payload digest so restart
+            # reconciliation can mark missing/invalid files unavailable.
+            if not self.checkpoint_is_available(record_id):
+                payload = {**payload, "checkpoint_unavailable": True}
         return payload
 
     def list(self, *, kind: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
@@ -365,6 +429,155 @@ class TalonStore:
             for row in rows
         ]
 
+    def _remove_uncommitted_checkpoint_artifacts(self, record_id: str) -> None:
+        """Remove ``.partial`` files and any published checkpoint with no completed record.
+
+        Completed runs' checkpoints are never deleted. Callers must only invoke this
+        for non-completed records (or after confirming the record is not completed).
+        """
+
+        record = self.get(record_id)
+        if record is not None and record.get("status") == "completed":
+            return
+        private = self._private_directory(record_id)
+        if not private.exists():
+            return
+        for partial in private.glob("*.partial"):
+            try:
+                partial.chmod(0o600)
+            except OSError:
+                pass
+            partial.unlink(missing_ok=True)
+        checkpoint = private / "checkpoint.pt"
+        if checkpoint.exists() or checkpoint.is_symlink():
+            try:
+                checkpoint.chmod(0o600)
+            except OSError:
+                pass
+            checkpoint.unlink(missing_ok=True)
+
+    def _quarantine_path(self, path: Path) -> None:
+        quarantine_root = self.quarantine_dir / "orphan-checkpoints"
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        target = quarantine_root / f"{path.name}.{utc_now().replace(':', '').replace('.', '')}"
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        try:
+            os.replace(path, target)
+        except OSError:
+            path.unlink(missing_ok=True)
+
+    def set_checkpoint_health(self, record_id: str, *, available: bool, reason: str | None = None) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO talon_checkpoint_health(record_id,available,reason,checked_at) VALUES(?,?,?,?)",
+                (record_id, 1 if available else 0, reason, utc_now()),
+            )
+
+    def checkpoint_is_available(self, record_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT available FROM talon_checkpoint_health WHERE record_id=?",
+                (record_id,),
+            ).fetchone()
+        if row is None:
+            return True
+        return bool(row["available"])
+
+    def reconcile_orphan_checkpoints(self) -> dict[str, int]:
+        """Restart-safe checkpoint reconciliation under the private artifact root.
+
+        A. completed + valid file → keep (mark available)
+        B. completed + missing/invalid → mark unavailable (do not silently accept)
+        C. non-completed + checkpoint file → remove/quarantine
+        D. checkpoint file with no DB record under private/ → quarantine/remove
+        E. ``.partial`` → remove
+        """
+
+        from .bindings import BindingSource, TrustedCheckpointBinding, logical_checkpoint_identity, resolve_bound_checkpoint
+
+        summary = {
+            "kept_completed": 0,
+            "marked_unavailable": 0,
+            "removed_non_completed": 0,
+            "quarantined_orphans": 0,
+            "removed_partials": 0,
+        }
+        known_ids: set[str] = set()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT record_id,kind,status,payload_json FROM talon_records"
+            ).fetchall()
+        for row in rows:
+            record_id = str(row["record_id"])
+            known_ids.add(record_id)
+            status = str(row["status"])
+            private = self._private_directory(record_id)
+            for partial in private.glob("*.partial") if private.exists() else ():
+                try:
+                    partial.chmod(0o600)
+                except OSError:
+                    pass
+                partial.unlink(missing_ok=True)
+                summary["removed_partials"] += 1
+            checkpoint = private / "checkpoint.pt"
+            if status == "completed" and row["kind"] == "training":
+                payload = json.loads(row["payload_json"])
+                payload["record_id"] = record_id
+                payload["kind"] = "training"
+                payload["status"] = "completed"
+                digest = payload.get("checkpoint_digest")
+                if not digest:
+                    self.set_checkpoint_health(record_id, available=False, reason="missing_digest")
+                    summary["marked_unavailable"] += 1
+                    continue
+                try:
+                    identity = payload.get("artifact_identity") or logical_checkpoint_identity(record_id)
+                    binding = TrustedCheckpointBinding(
+                        training_run_id=record_id,
+                        checkpoint_id=record_id,
+                        trusted_digest=str(digest),
+                        artifact_identity=str(identity),
+                        binding_source=BindingSource.IMMUTABLE_DB_RECORD,
+                        offline_dataset_digest=(
+                            str(payload["offline_dataset_digest"])
+                            if payload.get("offline_dataset_digest")
+                            else None
+                        ),
+                    )
+                    resolve_bound_checkpoint(self.private_dir, binding, require_digest_match=True)
+                except (TypeError, ValueError):
+                    self.set_checkpoint_health(record_id, available=False, reason="missing_or_invalid_file")
+                    summary["marked_unavailable"] += 1
+                    continue
+                self.set_checkpoint_health(record_id, available=True, reason=None)
+                summary["kept_completed"] += 1
+                continue
+            if checkpoint.exists() or checkpoint.is_symlink():
+                self._quarantine_path(checkpoint)
+                summary["removed_non_completed"] += 1
+        if self.private_dir.exists():
+            for entry in self.private_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                record_id = entry.name
+                for partial in entry.glob("*.partial"):
+                    try:
+                        partial.chmod(0o600)
+                    except OSError:
+                        pass
+                    partial.unlink(missing_ok=True)
+                    summary["removed_partials"] += 1
+                checkpoint = entry / "checkpoint.pt"
+                if not (checkpoint.exists() or checkpoint.is_symlink()):
+                    continue
+                if record_id not in known_ids:
+                    self._quarantine_path(checkpoint)
+                    summary["quarantined_orphans"] += 1
+        return summary
+
     def mark_active_interrupted(self) -> int:
         with self._lock:
             rows = self._connection.execute(
@@ -373,13 +586,19 @@ class TalonStore:
         count = 0
         for row in rows:
             record_id = str(row["record_id"])
+            # Drop uncommitted partials / published checkpoints before terminalising so a
+            # restart cannot leave an interrupted run's weights consumable.
+            self._remove_uncommitted_checkpoint_artifacts(record_id)
             try:
                 digest = self.finalize(record_id, "interrupted", {"error_category": "api_restart"})
             except TalonImmutableRecordError:
                 continue
+            # Re-clean after finalize in case a late publish raced the restart.
+            self._remove_uncommitted_checkpoint_artifacts(record_id)
             scope = "talon_training" if row["kind"] == "training" else "talon_evaluation"
             self.append_terminal_event(scope, record_id, {"record_id": record_id, "status": "interrupted", "record_digest": digest})
             count += 1
+        self.reconcile_orphan_checkpoints()
         return count
 
     def _has_dependents(self, record_id: str) -> bool:

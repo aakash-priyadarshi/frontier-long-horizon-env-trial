@@ -5,6 +5,8 @@ import TalonScenariosPage from "@/app/talon/scenarios/page";
 import TalonPolicyPage from "@/app/talon/policy/page";
 import TalonTrainingRunPage from "@/app/talon/training/[runId]/page";
 import TalonEvaluationPage from "@/app/talon/evaluations/[evaluationId]/page";
+import TalonEpisodeReplayPage from "@/app/talon/episodes/[episodeId]/replay/page";
+import TalonComparePage from "@/app/talon/compare/page";
 
 function response(body: unknown) {
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) } as Response);
@@ -79,4 +81,70 @@ test("evaluation timeline displays only opaque episodes and high-level categorie
   expect(screen.getAllByText("Confidence calibration").length).toBeGreaterThan(0);
   expect(document.body.textContent).not.toMatch(/scenario_famil|failed_predicate|expected_action|seed 0/i);
   expect(screen.queryByRole("button", { name: /engage|disable|jam/i })).not.toBeInTheDocument();
+});
+
+test("completed CQL replay exposes public decisions, Q diagnostics, and accessible controls", async () => {
+  const episodeId = `ep_${"a".repeat(24)}`;
+  vi.stubGlobal("fetch", vi.fn(() => response({
+    schema_version: "talon.public-episode-replay/1.0", replay_id: `replay_${"b".repeat(24)}`, replay_digest: `sha256:${"c".repeat(64)}`,
+    evaluation_id: "talon_eval_test", episode_id: episodeId, checkpoint_digest: `sha256:${"d".repeat(64)}`,
+    environment_version: "talon.environment/2.0", verifier_version: "talon.verifier/2.0", terminal: true,
+    metrics: { strict_success: false, score: .5, safety_violation_count: 0, action_count: 1, abstention_rate: 0, gate_intervention_rate: 0, approval_correctness: 1, evidence_efficiency: .5, expected_calibration_error: .1, failed_categories: ["timeliness"] },
+    steps: [{ schema_version: "talon.public-replay-step/1.0", sequence: 1, simulated_time_ms: 1000,
+      observation: { track_id: "track-opaque", distance_m: 850, approach_rate_mps: 12, classification_confidence: .8, detection_confidence: .9, pending_evidence: [] },
+      evidence_pending: [], evidence_completed: ["sensor_confirmation"], raw_action: "ALERT_SECURITY_OPERATOR", action_confidence: .75, abstained: false,
+      top_action_scores: [{ action: "ALERT_SECURITY_OPERATOR", operational_q: .7, safety_q: .02, publicly_valid: true, below_safety_threshold: true }],
+      gate: { accepted: true, requested_action: "ALERT_SECURITY_OPERATOR", effective_action: "ALERT_SECURITY_OPERATOR", violation_codes: [], reason_codes: [], human_approval_required: false, approval_consumed: false, external_effect: false },
+      effective_action: "ALERT_SECURITY_OPERATOR", approval: { status: "none", approval_id: null, expires_at_ms: null, consumed: false }, terminated: true, truncated: false }],
+  })));
+  render(<TalonEpisodeReplayPage />);
+  expect(await screen.findByRole("heading", { name: "Human-readable model behaviour" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Play replay" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Replay position")).toBeInTheDocument();
+  expect(screen.getAllByText("ALERT_SECURITY_OPERATOR").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("0.0200").length).toBeGreaterThan(0);
+  expect(screen.getByText("Not collected or retained")).toBeInTheDocument();
+  expect(document.body.textContent).not.toMatch(/true_intent|scenario_family|expert_action|verifier_predicate|chain of thought:/i);
+});
+
+test("compare page renders held-out charts and same-instance sync without private labels", async () => {
+  const left = "talon_eval_left";
+  const right = "talon_eval_right";
+  vi.stubGlobal("fetch", vi.fn((url: string) => {
+    if (url.includes("/comparisons")) {
+      return response({
+        items: [{
+          record_id: "talon_compare_test",
+          kind: "comparison",
+          status: "completed",
+          record_digest: `sha256:${"e".repeat(64)}`,
+          compatibility: { domain_compatible: true, runtime_versions_compatible: true },
+          models: [
+            { evaluation_id: left, model_id: "model_left", algorithm: "behaviour_cloning" },
+            { evaluation_id: right, model_id: "model_right", algorithm: "discrete_cql" },
+          ],
+          results: [
+            { evaluation_id: left, aggregate: { episode_count: 1, strict_success_count: 1, strict_success_rate: 1, safety_violation_count: 0, safety_violation_rate: 0, average_score: 1, abstention_rate: 0, false_escalation_rate: 0, missed_threat_rate: 0, expected_calibration_error: 0.1, held_out_action_accuracy: 0.8, gate_intervention_rate: 0.1, worst_case_score: 1 } },
+            { evaluation_id: right, aggregate: { episode_count: 1, strict_success_count: 0, strict_success_rate: 0, safety_violation_count: 1, safety_violation_rate: 1, average_score: 0.4, abstention_rate: 0.2, false_escalation_rate: 0, missed_threat_rate: 0.1, expected_calibration_error: 0.2, held_out_action_accuracy: 0.5, gate_intervention_rate: 0.3, worst_case_score: 0.2 } },
+          ],
+          aligned_instances: [{
+            instance_index: 1,
+            outcomes: [
+              { evaluation_id: left, model_id: "model_left", algorithm: "behaviour_cloning", episode_id: `ep_${"1".repeat(24)}`, strict_success: true, score: 1, safety_violation_count: 0, verdict: "pass" },
+              { evaluation_id: right, model_id: "model_right", algorithm: "discrete_cql", episode_id: `ep_${"2".repeat(24)}`, strict_success: false, score: 0.4, safety_violation_count: 1, verdict: "fail" },
+            ],
+          }],
+        }],
+        total: 1,
+      });
+    }
+    return response({ items: [], total: 0 });
+  }));
+  render(<TalonComparePage />);
+  expect((await screen.findAllByText("Held-out simulation comparison")).length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Same-instance synchronized scores").length).toBeGreaterThan(0);
+  expect(screen.getAllByTestId("bar-chart").length).toBeGreaterThanOrEqual(2);
+  expect(screen.getAllByText("Instance 1").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("diverged").length).toBeGreaterThan(0);
+  expect(document.body.textContent).not.toMatch(/scenario_family|evaluation_instance_digest|expert_action|true_intent/i);
 });

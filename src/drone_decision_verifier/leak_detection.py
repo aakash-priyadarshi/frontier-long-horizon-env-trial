@@ -41,6 +41,10 @@ _PRIVILEGED_KEY_FRAGMENTS = frozenset(
 _SECRET_KEY_FRAGMENTS = frozenset(
     {"api_key", "authorization", "capability_token", "credential", "password", "private_key", "reasoning", "secret", "token"}
 )
+# Public model architecture metadata is not environment hidden state. This
+# exact key is numeric and schema-constrained by the offline-RL public models;
+# broader keys containing "hidden" remain prohibited.
+_PUBLIC_ARCHITECTURE_KEYS = frozenset({"hidden_dim"})
 _PAIR_ALIASES = frozenset({"paired_blind", "paired_member", "member_a", "member_b", "wrong_hidden"})
 _PATH_PATTERN = re.compile(r"(?:[A-Za-z]:\\|/(?:home|Users|workspace|app|tmp)/)")
 _BEARER_PATTERN = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}")
@@ -67,7 +71,13 @@ def find_public_leaks(value: Any) -> list[str]:
         if isinstance(item, Mapping):
             for raw_key, nested in item.items():
                 key = _normalise(raw_key)
-                if any(fragment in key for fragment in _PRIVILEGED_KEY_FRAGMENTS):
+                public_architecture_value = (
+                    key in _PUBLIC_ARCHITECTURE_KEYS
+                    and isinstance(nested, int)
+                    and not isinstance(nested, bool)
+                    and 1 <= nested <= 65_536
+                )
+                if not public_architecture_value and any(fragment in key for fragment in _PRIVILEGED_KEY_FRAGMENTS):
                     add(f"{path}.{raw_key}", "privileged_key")
                 if any(fragment in key for fragment in _SECRET_KEY_FRAGMENTS):
                     add(f"{path}.{raw_key}", "sensitive_key")

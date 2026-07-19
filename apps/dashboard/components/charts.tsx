@@ -8,7 +8,7 @@ import {
   LinearScale, PointElement, Tooltip, type ChartData, type ChartOptions, type ChartType,
 } from "chart.js";
 import { useReducedMotion } from "motion/react";
-import type { ComparisonGroup } from "@/lib/types";
+import type { ComparisonGroup, TalonRecord } from "@/lib/types";
 import { DataTable, EmptyState } from "@/components/ui";
 import { MotionButton } from "@/components/motion";
 import { number } from "@/lib/format";
@@ -212,6 +212,17 @@ export function TrainingCurveChart({ points, mode = "chart" }: { points: Array<{
   return points.length ? <ChartCard title="Training progress" description="Live supervised loss and expert-action accuracy. The policy gate is evaluated separately." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="No training epochs yet" detail="The curve will populate from replayable training events." /></section>;
 }
 
+export function CQLTrainingCurveChart({ points, mode = "chart" }: { points: Array<{ epoch: number; loss: number; reward_td_loss: number; safety_td_loss: number; cql_penalty: number }>; mode?: ChartViewMode }) {
+  const data = useMemo<ChartData<"line">>(() => ({ labels: points.map(point => point.epoch), datasets: [
+    { label: "Total loss", data: points.map(point => point.loss), borderColor: MODEL_COLORS[0], backgroundColor: MODEL_COLORS[0] },
+    { label: "Reward TD", data: points.map(point => point.reward_td_loss), borderColor: MODEL_COLORS[2], backgroundColor: MODEL_COLORS[2] },
+    { label: "Safety TD", data: points.map(point => point.safety_td_loss), borderColor: MODEL_COLORS[4], backgroundColor: MODEL_COLORS[4] },
+    { label: "CQL penalty", data: points.map(point => point.cql_penalty), borderColor: MODEL_COLORS[1], backgroundColor: MODEL_COLORS[1] },
+  ] }), [points]);
+  const options = useCartesianOptions<"line">({ points: points.length * 4 });
+  return points.length ? <ChartCard title="Conservative offline-RL losses" description="Reward TD, safety-cost TD, and CQL conservatism remain separately inspectable." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="No CQL epochs yet" detail="Loss components will populate from replayable training events." /></section>;
+}
+
 export function TalonCalibrationChart({ bins, mode = "chart" }: { bins: Array<{ lower: number; upper: number; count: number; mean_confidence: number; gate_acceptance_rate: number }>; mode?: ChartViewMode }) {
   const populated = useMemo(() => bins.filter(bin => bin.count > 0), [bins]);
   const data = useMemo<ChartData<"line">>(() => ({ labels: populated.map(bin => `${Math.round(bin.lower * 100)}–${Math.round(bin.upper * 100)}%`), datasets: [
@@ -220,4 +231,92 @@ export function TalonCalibrationChart({ bins, mode = "chart" }: { bins: Array<{ 
   ] }), [populated]);
   const options = useCartesianOptions<"line">({ max: 1, points: populated.length * 2 });
   return populated.length ? <ChartCard title="Confidence calibration" description="Aggregate recommendation confidence versus public policy-gate acceptance; no hidden reference action is exposed." data={data} mode={mode}><Line data={data} options={options} /></ChartCard> : <section className="chart-card"><EmptyState title="Calibration pending" detail="Completed episodes will populate bounded confidence bins." /></section>;
+}
+
+type TalonComparisonSeries = {
+  label: string;
+  color: string;
+  strictSuccessRate: number;
+  safetyViolationRate: number;
+  averageScore: number;
+  heldOutAccuracy: number;
+  worstCaseScore: number;
+  gateInterventionRate: number;
+};
+
+function talonSeriesLabel(modelId: string | null | undefined, algorithm: string | undefined, evaluationId: string) {
+  const objective = algorithm === "discrete_cql" ? "CQL" : "BC";
+  return `${modelId ?? evaluationId.slice(0, 14)} · ${objective}`;
+}
+
+export function TalonHeldOutComparisonChart({ results, models, mode = "chart" }: {
+  results: NonNullable<TalonRecord["results"]>;
+  models?: TalonRecord["models"];
+  mode?: ChartViewMode;
+}) {
+  const series = useMemo<TalonComparisonSeries[]>(() => results.map((result, index) => {
+    const model = models?.find(item => item.evaluation_id === result.evaluation_id);
+    const aggregate = result.aggregate;
+    return {
+      label: talonSeriesLabel(model?.model_id, model?.algorithm, result.evaluation_id),
+      color: MODEL_COLORS[index % MODEL_COLORS.length],
+      strictSuccessRate: (aggregate?.strict_success_rate ?? 0) * 100,
+      safetyViolationRate: (aggregate?.safety_violation_rate ?? 0) * 100,
+      averageScore: aggregate?.average_score ?? 0,
+      heldOutAccuracy: (aggregate?.held_out_action_accuracy ?? 0) * 100,
+      worstCaseScore: aggregate?.worst_case_score ?? 0,
+      gateInterventionRate: (aggregate?.gate_intervention_rate ?? 0) * 100,
+    };
+  }), [models, results]);
+  const data = useMemo<ChartData<"bar">>(() => ({
+    labels: ["Strict success %", "Held-out accuracy %", "Safety violation %", "Gate intervention %", "Average score ×100", "Worst-case ×100"],
+    datasets: series.map(item => ({
+      label: item.label,
+      data: [
+        item.strictSuccessRate,
+        item.heldOutAccuracy,
+        item.safetyViolationRate,
+        item.gateInterventionRate,
+        item.averageScore * 100,
+        item.worstCaseScore * 100,
+      ],
+      backgroundColor: `${item.color}cc`,
+      borderColor: item.color,
+      borderWidth: 1,
+    })),
+  }), [series]);
+  const options = useCartesianOptions<"bar">({ max: 100, points: series.length * 6 });
+  if (!series.length) return <section className="chart-card"><EmptyState title="No comparison metrics" detail="Create a domain-compatible comparison to render held-out charts." /></section>;
+  return <ChartCard title="Held-out simulation comparison" description="Domain-matched aggregates only. Operational score is shown beside safety outcomes and never combined with them." data={data} mode={mode}><Bar data={data} options={options} /></ChartCard>;
+}
+
+export function TalonSameInstanceSyncChart({ aligned, models, mode = "chart" }: {
+  aligned: NonNullable<TalonRecord["aligned_instances"]>;
+  models?: TalonRecord["models"];
+  mode?: ChartViewMode;
+}) {
+  const evaluationIds = useMemo(() => {
+    if (models?.length) return models.map(item => item.evaluation_id);
+    return Array.from(new Set(aligned.flatMap(item => item.outcomes.map(outcome => outcome.evaluation_id))));
+  }, [aligned, models]);
+  const data = useMemo<ChartData<"bar">>(() => ({
+    labels: aligned.map(item => `Instance ${item.instance_index}`),
+    datasets: evaluationIds.map((evaluationId, index) => {
+      const model = models?.find(item => item.evaluation_id === evaluationId);
+      const sample = aligned.find(item => item.outcomes.some(outcome => outcome.evaluation_id === evaluationId))?.outcomes.find(outcome => outcome.evaluation_id === evaluationId);
+      return {
+        label: talonSeriesLabel(model?.model_id ?? sample?.model_id, model?.algorithm ?? sample?.algorithm, evaluationId),
+        data: aligned.map(item => {
+          const outcome = item.outcomes.find(candidate => candidate.evaluation_id === evaluationId);
+          return outcome ? (outcome.score ?? (outcome.strict_success ? 1 : 0)) : null;
+        }),
+        backgroundColor: `${MODEL_COLORS[index % MODEL_COLORS.length]}cc`,
+        borderColor: MODEL_COLORS[index % MODEL_COLORS.length],
+        borderWidth: 1,
+      };
+    }),
+  }), [aligned, evaluationIds, models]);
+  const options = useCartesianOptions<"bar">({ max: 1, points: aligned.length * evaluationIds.length });
+  if (!aligned.length) return <section className="chart-card"><EmptyState title="No synchronized instances" detail="Aligned instance scores appear after a domain-compatible comparison is created." /></section>;
+  return <ChartCard title="Same-instance synchronized scores" description="Opaque ordinal instances share the same deterministic scenario domain across models. Digests and private labels stay private." data={data} mode={mode}><Bar data={data} options={options} /></ChartCard>;
 }

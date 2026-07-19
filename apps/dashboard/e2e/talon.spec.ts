@@ -5,6 +5,9 @@ const controlHeaders = { Origin: "http://localhost:3000" };
 let datasetId = "";
 let trainingId = "";
 let evaluationId = "";
+let cqlTrainingId = "";
+let cqlEvaluationId = "";
+let replayEpisodeId = "";
 
 async function waitForRecord(request: APIRequestContext, path: string, timeout = 120_000) {
   const deadline = Date.now() + timeout;
@@ -129,5 +132,49 @@ test.describe.serial("real Talon simulation journeys", () => {
     await page.goto("/talon");
     await expect(page.getByText("the optional Talon component is temporarily unavailable")).toBeVisible();
     await expect(page.getByRole("navigation", { name: "Primary navigation" })).toBeVisible();
+  });
+
+  test("11. conservative offline CQL trains from the authenticated static dataset", async ({ page, request }) => {
+    const created = await request.post(`${api}/api/drone/offline-rl/training-runs`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-cql-${Date.now()}` },
+      data: { dataset_id: datasetId, epochs: 1, batch_size: 64, context_length: 8, hidden_dim: 16, layers: 1, dropout: 0, target_update_interval: 2, timeout_seconds: 120 },
+    });
+    const creation = await created.json();
+    expect(created.status(), JSON.stringify(creation)).toBe(202);
+    cqlTrainingId = creation.training_run_id;
+    await page.goto(`/talon/training/${cqlTrainingId}`);
+    const settled = await waitForRecord(request, `/api/drone/offline-rl/training-runs/${cqlTrainingId}`, 150_000);
+    expect(settled.status).toBe("completed");
+    expect(settled.algorithm).toBe("discrete_cql");
+    expect(settled.offline_dataset_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Conservative offline-RL losses" })).toBeVisible();
+    await expect(page.getByText("Static transitions")).toBeVisible();
+  });
+
+  test("12. frozen CQL evaluation produces an immutable public replay", async ({ page, request }) => {
+    const created = await request.post(`${api}/api/drone/offline-rl/evaluations`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-cql-eval-${Date.now()}` },
+      data: { training_run_id: cqlTrainingId, seed_count: 1, timeout_seconds: 120 },
+    });
+    const creation = await created.json();
+    expect(created.status(), JSON.stringify(creation)).toBe(202);
+    cqlEvaluationId = creation.evaluation_id;
+    const settled = await waitForRecord(request, `/api/drone/evaluations/${cqlEvaluationId}`, 150_000);
+    expect(settled.status).toBe("completed");
+    replayEpisodeId = settled.episodes[0].result.episode_id;
+    expect(settled.episodes[0].replay.replay_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    await page.goto(`/talon/episodes/${replayEpisodeId}/replay`);
+    await expect(page.getByRole("heading", { name: "Human-readable model behaviour" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Play replay" })).toBeVisible();
+    await expect(page.getByLabel("Replay position")).toBeVisible();
+    await page.getByRole("button", { name: "Next step" }).click();
+    const body = await page.locator("body").innerText();
+    expect(body).toMatch(/deterministic policy gate/i);
+    expect(body).toContain("Not collected or retained");
+    expect(body).not.toMatch(/scenario_family|true_intent|expert_action|verifier_predicate|chain.of.thought:/i);
+    const exported = await request.get(`${api}/api/drone/episodes/${replayEpisodeId}/replay/export.json`);
+    expect(exported.ok()).toBeTruthy();
+    expect(await exported.text()).not.toMatch(/scenario_family|true_intent|expert_action|verifier_predicate/i);
   });
 });

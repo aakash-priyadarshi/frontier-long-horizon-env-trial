@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import torch
     from torch import nn
 except ImportError as exc:  # pragma: no cover - dependency guard
     raise ImportError("Talon checkpoints require the optional 'talon' dependency") from exc
+
+from drone_decision_ground.environment import ENVIRONMENT_VERSION
+from drone_decision_verifier.scoring import VERIFIER_VERSION
 
 from .decision_transformer import DecisionTransformerPolicy
 from .features import ACTIONS, FEATURE_DIM, FEATURE_SCHEMA_VERSION
@@ -21,10 +25,39 @@ from .manifests import NormalizationStats
 
 
 CHECKPOINT_FORMAT_VERSION = "talon.checkpoint/2.0"
+_GRU_MODEL_CONFIG_KEYS = frozenset({"feature_dim", "hidden_dim", "layers", "dropout"})
+_DT_MODEL_CONFIG_KEYS = frozenset(
+    {"feature_dim", "hidden_dim", "layers", "heads", "context_length", "dropout"}
+)
 
 
 def file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _build_policy(architecture: object, config: dict[str, Any]) -> nn.Module:
+    """Construct a BC policy after validating architecture-specific configuration.
+
+    Rejects DT-only fields on GRU (and unknown keys) with a sanitized ValueError
+    before model construction, so incompatible rewrites do not surface as TypeError.
+    """
+
+    if architecture == "gru":
+        allowed = _GRU_MODEL_CONFIG_KEYS
+    elif architecture == "decision_transformer":
+        allowed = _DT_MODEL_CONFIG_KEYS
+    else:
+        raise ValueError("unknown checkpoint architecture")
+    unexpected = set(config) - allowed
+    if unexpected:
+        raise ValueError("checkpoint model configuration is incompatible")
+    try:
+        filtered = {key: config[key] for key in config if key in allowed}
+        if architecture == "gru":
+            return GRUPolicy(**filtered)
+        return DecisionTransformerPolicy(**filtered)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("checkpoint model configuration is incompatible") from exc
 
 
 def _validated_payload(path: Path) -> dict[str, Any]:
@@ -48,7 +81,16 @@ def save_checkpoint(
     training_instance_digests: tuple[str, ...],
     seed_domain_digest: str,
     return_conditioning_target: float,
+    should_abort: Callable[[], bool] | None = None,
+    _test_barrier: Callable[[str], None] | None = None,
 ) -> str:
+    """Atomically publish a behaviour-cloning checkpoint.
+
+    ``_test_barrier`` is a private race-test hook (phases: ``after_temp_write``,
+    ``before_publish``, ``after_publish``). ``should_abort`` is checked after temp
+    validation and before the hard-link publish.
+    """
+
     if (
         not dataset_digest.startswith("sha256:")
         or len(dataset_digest) != 71
@@ -68,6 +110,8 @@ def save_checkpoint(
         "dataset_digest": dataset_digest,
         "training_instance_digests": list(training_instance_digests),
         "seed_domain_digest": seed_domain_digest,
+        "environment_version": ENVIRONMENT_VERSION,
+        "verifier_version": VERIFIER_VERSION,
         "normalization": normalization.model_dump(mode="json"),
         "context_length": context_length,
         "return_conditioning_target": float(return_conditioning_target),
@@ -84,6 +128,14 @@ def save_checkpoint(
             os.fsync(handle.fileno())
         _validated_payload(temporary)
         temporary_digest = file_digest(temporary)
+        if _test_barrier is not None:
+            _test_barrier("after_temp_write")
+        if should_abort is not None and should_abort():
+            raise InterruptedError("checkpoint publish aborted before link")
+        if _test_barrier is not None:
+            _test_barrier("before_publish")
+        if should_abort is not None and should_abort():
+            raise InterruptedError("checkpoint publish aborted before link")
         # A hard-link publish is atomic and fails rather than replacing an
         # existing immutable checkpoint.
         os.link(temporary, path)
@@ -92,6 +144,8 @@ def save_checkpoint(
             raise OSError("checkpoint digest changed during atomic publication")
         temporary.unlink()
         path.chmod(0o444)
+        if _test_barrier is not None:
+            _test_barrier("after_publish")
         return temporary_digest
     finally:
         if temporary.exists():
@@ -102,13 +156,26 @@ def save_checkpoint(
             temporary.unlink(missing_ok=True)
 
 
-def load_checkpoint(path: Path, *, expected_digest: str | None = None) -> tuple[nn.Module, dict[str, Any]]:
+def load_checkpoint(path: Path, *, expected_digest: str) -> tuple[nn.Module, dict[str, Any]]:
+    if (
+        not isinstance(expected_digest, str)
+        or not expected_digest.startswith("sha256:")
+        or len(expected_digest) != 71
+        or any(character not in "0123456789abcdef" for character in expected_digest[7:])
+    ):
+        raise ValueError("checkpoint digest is missing or malformed")
     if not path.is_file():
         raise ValueError("checkpoint was not found")
     actual_digest = file_digest(path)
-    if expected_digest is not None and actual_digest != expected_digest:
+    if not hmac.compare_digest(actual_digest, expected_digest):
         raise ValueError("checkpoint digest mismatch")
     payload = _validated_payload(path)
+    if "environment_version" not in payload or "verifier_version" not in payload:
+        raise ValueError("unsupported checkpoint format")
+    if payload.get("environment_version") != ENVIRONMENT_VERSION:
+        raise ValueError("checkpoint environment compatibility is incompatible")
+    if payload.get("verifier_version") != VERIFIER_VERSION:
+        raise ValueError("checkpoint verifier compatibility is incompatible")
     if payload.get("feature_dim") != FEATURE_DIM or payload.get("feature_schema_version") != FEATURE_SCHEMA_VERSION:
         raise ValueError("checkpoint observation feature schema is incompatible")
     if payload.get("actions") != [action.value for action in ACTIONS]:
@@ -140,12 +207,7 @@ def load_checkpoint(path: Path, *, expected_digest: str | None = None) -> tuple[
     config = payload.get("model_config")
     if not isinstance(config, dict):
         raise ValueError("checkpoint model configuration is invalid")
-    if architecture == "gru":
-        model: nn.Module = GRUPolicy(**config)
-    elif architecture == "decision_transformer":
-        model = DecisionTransformerPolicy(**config)
-    else:
-        raise ValueError("unknown checkpoint architecture")
+    model = _build_policy(architecture, config)
     try:
         model.load_state_dict(payload["state_dict"], strict=True)
     except Exception as exc:
@@ -157,7 +219,7 @@ def load_checkpoint(path: Path, *, expected_digest: str | None = None) -> tuple[
     return model, metadata
 
 
-def inspect_checkpoint(path: Path) -> dict[str, Any]:
-    model, metadata = load_checkpoint(path)
+def inspect_checkpoint(path: Path, *, expected_digest: str) -> dict[str, Any]:
+    model, metadata = load_checkpoint(path, expected_digest=expected_digest)
     metadata["parameter_count"] = sum(parameter.numel() for parameter in model.parameters())
     return metadata

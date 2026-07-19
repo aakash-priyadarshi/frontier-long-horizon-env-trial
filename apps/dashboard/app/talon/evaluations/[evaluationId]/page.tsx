@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Download, Trash2 } from "lucide-react";
+import { Download, Play, Trash2 } from "lucide-react";
 import { api, eventUrl } from "@/lib/api";
 import type { TalonEpisode, TalonRecord } from "@/lib/types";
 import { MotionButton } from "@/components/motion";
@@ -125,6 +126,10 @@ export default function TalonEvaluationPage() {
         <MetricCard label="Missed threat" value={aggregate ? `${(aggregate.missed_threat_rate * 100).toFixed(1)}%` : "—"} />
         <MetricCard label="Abstention" value={aggregate ? `${(aggregate.abstention_rate * 100).toFixed(1)}%` : "—"} />
         <MetricCard label="Average score" value={aggregate?.average_score?.toFixed(3) ?? "—"} />
+        <MetricCard label="Gate intervention" value={aggregate?.gate_intervention_rate != null ? `${(aggregate.gate_intervention_rate * 100).toFixed(1)}%` : "—"} />
+        <MetricCard label="Evidence efficiency" value={aggregate?.evidence_efficiency != null ? `${(aggregate.evidence_efficiency * 100).toFixed(1)}%` : "—"} />
+        <MetricCard label="Approval correctness" value={aggregate?.approval_correctness != null ? `${(aggregate.approval_correctness * 100).toFixed(1)}%` : "—"} />
+        <MetricCard label="Worst-case score" value={aggregate?.worst_case_score?.toFixed(3) ?? "—"} />
       </section>
       {activeSteps.length > 0 && !terminal.has(record.status) && <section className="surface-section">
         <div className="section-head"><div><span className="eyebrow">Live isolated policy</span><h2>{activeEpisode}</h2></div><span className="status-badge">{activeSteps.length} actions</span></div>
@@ -134,7 +139,7 @@ export default function TalonEvaluationPage() {
       {record.episodes?.map(episode => <section className="surface-section" key={episode.result.episode_id}>
         <div className="section-head">
           <div><span className="eyebrow">Opaque episode {episode.result.episode_id}</span><h2>{episode.result.verdict} · {episode.result.score}</h2></div>
-          <span className={episode.result.safety_violation_count ? "danger" : "success"}>{episode.result.safety_violation_count} safety violations</span>
+          <div className="header-actions"><span className={episode.result.safety_violation_count ? "danger" : "success"}>{episode.result.safety_violation_count} safety violations</span>{episode.replay && <Link className="button secondary" href={`/talon/episodes/${episode.result.episode_id}/replay`}><Play size={14} />Replay</Link>}</div>
         </div>
         {episode.result.failed_categories.length
           ? <div className="tag-row">{episode.result.failed_categories.map(category => <code key={category}>{category}</code>)}</div>

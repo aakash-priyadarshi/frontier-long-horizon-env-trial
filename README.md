@@ -136,7 +136,7 @@ Credential-free CLI demo:
 
 See `docs/V2_LOCAL_DEVELOPMENT.md` and `.env.example` for full configuration.
 
-## Run Talon Milestone 1
+## Run Talon Milestones 1 and 2
 
 Start the normal V2 API and dashboard, then open `http://localhost:3000/talon`.
 Talon initializes lazily and stores records in a separate SQLite database and
@@ -144,6 +144,12 @@ artifact directory. The dashboard supports real private dataset jobs, GRU and
 Decision Transformer training, live evaluation timelines, strict safety metrics,
 one-time approval/replay demonstrations, safe JSON export, cancellation, and
 dependency-aware deletion.
+
+Milestone 2 adds conservative discrete CQL trained only from authenticated static
+private trajectories, frozen isolated evaluation, separately learned operational
+and safety-cost critics, and immutable human-readable episode replay. Select
+“Discrete CQL” on `/talon/training/new`; completed CQL evaluation episodes link to
+play/pause, scrubber, speed, gate/evidence filters, Q/safety tables and safe JSON.
 
 Talon has thirteen abstract actions. Command-link state is available only through
 the dedicated `REQUEST_COMMAND_LINK_VERIFICATION` action. Private datasets remain
@@ -159,6 +165,10 @@ The CLI is a privileged local operator interface. A minimal private flow is:
 .\.venv\Scripts\python.exe -m drone_training train-gru `
   --dataset .frontier\talon-demo\train.json `
   --output-dir .frontier\talon-demo\gru --epochs 5
+
+.\.venv\Scripts\python.exe -m drone_training train-cql `
+  --dataset .frontier\talon-demo\train.json `
+  --output-dir .frontier\talon-demo\cql --epochs 5
 ```
 
 The GRU is the first behaviour-cloning baseline. The custom Decision Transformer is
@@ -167,6 +177,8 @@ metrics are reported separately; training accuracy is not a generalization or sa
 claim. Neither model can invoke an external system. See `docs/TALON_SIMULATION.md`
 and `docs/TALON_API.md` for schemas, approval/process isolation, partitions, export
 allowlists, routes, and verification.
+Milestone 2 design, process boundaries, canonical transition digest and limitations
+are documented in `docs/talon-milestone-2.md`.
 
 ## Verify
 
@@ -181,6 +193,7 @@ dirty implementation tree:
 
 ```powershell
 uv run --extra talon --extra test python scripts\verify_talon_milestone_1.py --check-only
+uv run --extra talon --extra test python scripts\verify_talon_milestone_2.py --check-only
 ```
 
 Regenerate the final machine-readable receipt from fresh live runs:

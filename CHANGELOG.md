@@ -3,6 +3,33 @@
 All notable V2 evaluation-dashboard changes are documented here. The frozen V1
 environment, strict scoring contract, and `trial-submission-v1` tag are unchanged.
 
+## [Talon Milestone 2 - Unreleased] - 2026-07-18
+
+### Added
+
+- Canonical private offline transitions derived only after authoritative Milestone
+  1 dataset verification, covering public history, behavior action, separate
+  operational reward and safety cost, next history, termination and public masks.
+- A deterministic GRU discrete-CQL policy with reward/safety critics, target
+  network, masked TD targets, CQL regularization, safety filtering, fail-safe
+  abstention, per-run RNG isolation and digest-bound atomic checkpoints.
+- Frozen CQL evaluation in a weight-only `python -I` worker, disjoint instance
+  checks, richer non-compensable safety metrics and separate raw/effective actions.
+- Immutable public and privileged replay schemas, allowlisted replay API/SSE/export,
+  and a responsive replay dashboard with transport, scrubber, speed, filtering,
+  fullscreen, reduced motion and accessible Q/safety tables.
+- Versioned offline-RL API and CLI routes, cancellation/timeouts/idempotency, CQL
+  training inspector, model/evaluation comparison fields, tests and a check-only
+  Milestone 2 verifier that refuses evidence generation from a dirty tree.
+
+### Security
+
+- Private transitions, expert labels, safety costs, hidden truth and privileged
+  replay remain outside public SQLite, SSE, dashboard payloads and reviewer exports.
+- Q values cannot bypass the public action mask, safety threshold, deterministic
+  policy gate, one-time approval verifier or strict safety verifier. No physical
+  response or hardware control is added.
+
 ## [Talon Milestone 1 - Unreleased] - 2026-07-17
 
 ### Added

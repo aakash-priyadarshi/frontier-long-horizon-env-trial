@@ -224,8 +224,12 @@ def test_contaminated_tampered_and_partial_checkpoints_are_rejected(tmp_path: Pa
         load_checkpoint(checkpoint, expected_digest=digest)
     partial = tmp_path / "partial.pt"
     partial.write_bytes(b"not a checkpoint")
-    with pytest.raises(ValueError, match="incomplete or invalid"):
-        load_checkpoint(partial)
+    from drone_training.checkpoints import file_digest
+
+    with pytest.raises(ValueError, match="incomplete or invalid|digest mismatch|missing or malformed"):
+        load_checkpoint(partial, expected_digest=file_digest(partial))
+    with pytest.raises(ValueError, match="missing or malformed"):
+        load_checkpoint(partial, expected_digest="")  # type: ignore[arg-type]
 
 
 def test_evaluation_partition_cannot_be_optimized() -> None:
@@ -266,3 +270,57 @@ def test_cli_dataset_timeout_is_explicit_and_validated() -> None:
         ]
     )
     assert parsed.timeout_seconds == 7
+
+
+def test_bc_checkpoint_rejects_mismatched_or_missing_env_verifier_versions(tmp_path: Path) -> None:
+    from drone_decision_ground.environment import ENVIRONMENT_VERSION
+    from drone_decision_verifier.scoring import VERIFIER_VERSION
+
+    _, checkpoint, digest, _ = save(tmp_path, "gru")
+    _, metadata = load_checkpoint(checkpoint, expected_digest=digest)
+    assert metadata["environment_version"] == ENVIRONMENT_VERSION
+    assert metadata["verifier_version"] == VERIFIER_VERSION
+
+    checkpoint.chmod(0o600)
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["environment_version"] = "talon.environment/0.0"
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="environment compatibility is incompatible"):
+        load_checkpoint(checkpoint, expected_digest=file_digest(checkpoint))
+
+    _, checkpoint2, _, _ = save(tmp_path / "v2", "gru")
+    checkpoint2.chmod(0o600)
+    payload = torch.load(checkpoint2, map_location="cpu", weights_only=False)
+    payload["verifier_version"] = "talon.verifier/0.0"
+    torch.save(payload, checkpoint2)
+    with pytest.raises(ValueError, match="verifier compatibility is incompatible"):
+        load_checkpoint(checkpoint2, expected_digest=file_digest(checkpoint2))
+
+    _, checkpoint3, _, _ = save(tmp_path / "v3", "gru")
+    checkpoint3.chmod(0o600)
+    payload = torch.load(checkpoint3, map_location="cpu", weights_only=False)
+    del payload["environment_version"]
+    del payload["verifier_version"]
+    torch.save(payload, checkpoint3)
+    with pytest.raises(ValueError, match="unsupported checkpoint format"):
+        load_checkpoint(checkpoint3, expected_digest=file_digest(checkpoint3))
+
+
+def test_bc_architecture_config_mismatch_raises_sanitized_value_error(tmp_path: Path) -> None:
+    """DT-only model_config fields must not surface as TypeError on GRU load."""
+
+    _, checkpoint, _, _ = save(tmp_path, "decision_transformer")
+    checkpoint.chmod(0o600)
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["architecture"] = "gru"
+    torch.save(payload, checkpoint)
+    with pytest.raises(ValueError, match="model configuration is incompatible"):
+        load_checkpoint(checkpoint, expected_digest=file_digest(checkpoint))
+
+    _, gru_checkpoint, _, _ = save(tmp_path / "gru-extra", "gru")
+    gru_checkpoint.chmod(0o600)
+    payload = torch.load(gru_checkpoint, map_location="cpu", weights_only=False)
+    payload["model_config"] = {**payload["model_config"], "heads": 8, "context_length": 20}
+    torch.save(payload, gru_checkpoint)
+    with pytest.raises(ValueError, match="model configuration is incompatible"):
+        load_checkpoint(gru_checkpoint, expected_digest=file_digest(gru_checkpoint))

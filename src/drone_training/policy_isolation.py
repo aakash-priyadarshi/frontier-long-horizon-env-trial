@@ -51,6 +51,7 @@ def _readline_bounded(stream: Any, timeout: float) -> str:
 class IsolatedPolicyClient:
     def __init__(self, checkpoint: Path, *, expected_digest: str, timeout_seconds: float = 10.0) -> None:
         model, metadata = load_checkpoint(checkpoint, expected_digest=expected_digest)
+        self.expected_digest = expected_digest
         self.timeout_seconds = timeout_seconds
         self._temporary = tempfile.TemporaryDirectory(prefix="talon-policy-")
         root = Path(self._temporary.name)

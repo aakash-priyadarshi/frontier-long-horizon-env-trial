@@ -21,6 +21,8 @@ def public_record_summary(record: dict[str, Any]) -> dict[str, Any]:
             "progress",
             "model_id",
             "checkpoint_digest",
+            "artifact_identity",
+            "checkpoint_unavailable",
             "training_metrics",
             "training_history",
             "architecture",
@@ -29,6 +31,15 @@ def public_record_summary(record: dict[str, Any]) -> dict[str, Any]:
             "error_category",
             "dataset_digest",
             "trajectory_count",
+            "offline_dataset_digest",
+            "transition_count",
+            "algorithm",
+            "algorithm_version",
+            "hardware",
+            "models",
+            "compatibility",
+            "results",
+            "aligned_instances",
         )
         if key in record
     }

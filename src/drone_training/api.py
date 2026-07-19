@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
@@ -19,7 +20,8 @@ from evaluation_service.settings import Settings, dashboard_origins
 from .exports import public_evaluation_export, public_record_detail, public_record_summary
 from .orchestration import TalonOrchestrator
 from .persistence import TERMINAL_STATUSES, TalonIdempotencyConflict, TalonImmutableRecordError, TalonStore
-from .schemas import ApprovalDemoRequest, DatasetCreate, EvaluationCreate, TrainingCreate
+from .replay import PublicEpisodeReplay, public_replay_export, verify_public_replay
+from .schemas import ApprovalDemoRequest, ComparisonCreate, DatasetCreate, EvaluationCreate, OfflineRLTrainingCreate, TrainingCreate
 
 
 def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, settings: Settings) -> APIRouter:
@@ -211,6 +213,61 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
             raise HTTPException(status_code=409, detail={"code": "training_unavailable", "message": str(exc)}) from exc
         return {"training_run_id": record_id, "status": store.get(record_id)["status"]}
 
+    @router.post("/offline-rl/training-runs", status_code=202)
+    async def create_offline_training(
+        request: Request,
+        payload: OfflineRLTrainingCreate,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> dict[str, Any]:
+        require_local_origin(request)
+        try:
+            record_id = orchestrator.create_offline_training(payload, idempotency_key=idempotency_key)
+        except TalonIdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={"code": "offline_training_unavailable", "message": str(exc)}) from exc
+        return {"training_run_id": record_id, "status": store.get(record_id)["status"], "algorithm": "discrete_cql"}
+
+    @router.get("/offline-rl/training-runs")
+    async def offline_training_runs(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
+        records, _ = store.list(kind="training", limit=200, offset=0)
+        selected = [record for record in records if record.get("architecture") == "cql_gru" or record.get("algorithm") == "discrete_cql"]
+        sliced = selected[offset:offset + limit]
+        return {"items": [public_record_summary(record) for record in sliced], "total": len(selected), "limit": limit, "offset": offset}
+
+    @router.get("/offline-rl/training-runs/{record_id}")
+    async def offline_training_run(record_id: str) -> JSONResponse:
+        record = store.get(record_id)
+        if record is None or record.get("kind") != "training" or not (record.get("architecture") == "cql_gru" or record.get("algorithm") == "discrete_cql"):
+            raise not_found("offline_training_run")
+        return no_store(public_record_detail(record))
+
+    @router.get("/offline-rl/training-runs/{record_id}/checkpoint")
+    async def offline_training_checkpoint(record_id: str) -> JSONResponse:
+        record = store.get(record_id)
+        if record is None or record.get("kind") != "training" or record.get("status") != "completed" or not (record.get("architecture") == "cql_gru" or record.get("algorithm") == "discrete_cql"):
+            raise not_found("offline_checkpoint")
+        return no_store({
+            "training_run_id": record_id,
+            "schema_version": record.get("checkpoint_schema_version"),
+            "checkpoint_digest": record.get("checkpoint_digest"),
+            "artifact_identity": record.get("artifact_identity"),
+            "checkpoint_unavailable": bool(record.get("checkpoint_unavailable")),
+            "dataset_digest": record.get("offline_dataset_digest"),
+            "source_dataset_digest": record.get("dataset_digest"),
+            "architecture": record.get("architecture"),
+            "algorithm": record.get("algorithm"),
+            "action_schema_version": record.get("action_schema_version"),
+            "feature_schema": record.get("feature_schema"),
+        })
+
+    @router.post("/offline-rl/training-runs/{record_id}/cancel", status_code=202)
+    async def cancel_offline_training(request: Request, record_id: str) -> JSONResponse:
+        require_local_origin(request)
+        if not orchestrator.cancel(record_id):
+            raise HTTPException(status_code=409, detail={"code": "not_cancellable", "message": "offline training run is not cancellable"})
+        return no_store({"record_id": record_id, "status": "cancelling"}, status_code=202)
+
     @router.get("/training-runs")
     async def training_runs(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
         records, total = store.list(kind="training", limit=limit, offset=offset)
@@ -252,6 +309,29 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
             raise HTTPException(status_code=409, detail={"code": "evaluation_unavailable", "message": str(exc)}) from exc
         return {"evaluation_id": record_id, "status": store.get(record_id)["status"]}
 
+    @router.post("/offline-rl/evaluations", status_code=202)
+    async def create_offline_evaluation(
+        request: Request,
+        payload: EvaluationCreate,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> dict[str, Any]:
+        require_local_origin(request)
+        training = store.get(payload.training_run_id)
+        if training is None or not (training.get("architecture") == "cql_gru" or training.get("algorithm") == "discrete_cql"):
+            raise HTTPException(status_code=409, detail={"code": "offline_checkpoint_required", "message": "a completed discrete CQL checkpoint is required"})
+        try:
+            record_id = orchestrator.create_evaluation(payload, idempotency_key=idempotency_key)
+        except (TalonIdempotencyConflict, ValueError) as exc:
+            raise HTTPException(status_code=409, detail={"code": "offline_evaluation_unavailable", "message": str(exc)}) from exc
+        return {"evaluation_id": record_id, "status": store.get(record_id)["status"], "algorithm": "discrete_cql"}
+
+    @router.get("/offline-rl/evaluations")
+    async def offline_evaluations(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
+        records, _ = store.list(kind="evaluation", limit=200, offset=0)
+        selected = [record for record in records if record.get("algorithm") == "discrete_cql"]
+        sliced = selected[offset:offset + limit]
+        return {"items": [public_record_summary(record) for record in sliced], "total": len(selected), "limit": limit, "offset": offset}
+
     @router.get("/evaluations")
     async def evaluations(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
         records, total = store.list(kind="evaluation", limit=limit, offset=offset)
@@ -284,9 +364,59 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
     async def training_events(request: Request, record_id: str, last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
         return events_response(request, record_id, "talon_training", last_event_id, after)
 
+    @router.get("/offline-rl/training-runs/{record_id}/events")
+    async def offline_training_events(request: Request, record_id: str, last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
+        return events_response(request, record_id, "talon_training", last_event_id, after)
+
     @router.get("/evaluations/{record_id}/events")
     async def evaluation_events(request: Request, record_id: str, last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
         return events_response(request, record_id, "talon_evaluation", last_event_id, after)
+
+    @router.get("/offline-rl/evaluations/{record_id}/events")
+    async def offline_evaluation_events(request: Request, record_id: str, last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
+        return events_response(request, record_id, "talon_evaluation", last_event_id, after)
+
+    def find_replay(episode_id: str) -> PublicEpisodeReplay:
+        offset = 0
+        while True:
+            records, total = store.list(kind="evaluation", limit=200, offset=offset)
+            for record in records:
+                if record.get("status") != "completed":
+                    continue
+                for episode in record.get("episodes", []):
+                    result = episode.get("result", {})
+                    if result.get("episode_id") == episode_id and isinstance(episode.get("replay"), dict):
+                        return verify_public_replay(PublicEpisodeReplay.model_validate(episode["replay"]))
+            offset += len(records)
+            if not records or offset >= total:
+                break
+        raise not_found("episode_replay")
+
+    @router.get("/episodes/{episode_id}/replay")
+    async def episode_replay(episode_id: str) -> JSONResponse:
+        return no_store(public_replay_export(find_replay(episode_id)))
+
+    @router.get("/episodes/{episode_id}/replay/export.json")
+    async def episode_replay_export(episode_id: str) -> JSONResponse:
+        payload = public_replay_export(find_replay(episode_id))
+        return JSONResponse(payload, headers={"Content-Disposition": f'attachment; filename="{episode_id}-replay.json"', "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+    @router.get("/episodes/{episode_id}/replay/events")
+    async def episode_replay_events(episode_id: str, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
+        replay = find_replay(episode_id)
+
+        async def replay_stream() -> AsyncIterator[str]:
+            import json
+
+            for step in replay.steps:
+                if step.sequence <= after:
+                    continue
+                data = json.dumps({"replay_id": replay.replay_id, "step": step.model_dump(mode="json")}, sort_keys=True, separators=(",", ":"))
+                yield f"id: {step.sequence}\nevent: replay_step\ndata: {data}\n\n"
+            terminal = json.dumps({"replay_id": replay.replay_id, "replay_digest": replay.replay_digest}, sort_keys=True, separators=(",", ":"))
+            yield f"id: {len(replay.steps) + 1}\nevent: terminal\ndata: {terminal}\n\n"
+
+        return StreamingResponse(replay_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Content-Type-Options": "nosniff"})
 
     @router.get("/datasets/{record_id}/events")
     async def dataset_events(request: Request, record_id: str, last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
@@ -299,9 +429,101 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
         return {"items": items, "total": len(items)}
 
     @router.get("/comparisons")
-    async def comparisons() -> dict[str, Any]:
-        records, _ = store.list(kind="evaluation", limit=200)
-        return {"items": [{"evaluation_id": record["record_id"], "aggregate": record.get("aggregate"), "status": record.get("status")} for record in records]}
+    async def comparisons(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
+        records, total = store.list(kind="comparison", limit=limit, offset=offset)
+        return {"items": [public_record_summary(record) for record in records], "total": total, "limit": limit, "offset": offset}
+
+    @router.post("/comparisons", status_code=201)
+    async def create_comparison(
+        request: Request,
+        payload: ComparisonCreate,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> JSONResponse:
+        require_local_origin(request)
+        configuration = payload.model_dump(mode="json")
+        existing = store.resolve_idempotency("comparison", idempotency_key, configuration)
+        if existing is not None:
+            record = store.get(existing)
+            if record is None:
+                raise HTTPException(status_code=409, detail={"code": "comparison_unavailable", "message": "comparison record is unavailable"})
+            return no_store(public_record_detail(record), status_code=200)
+        records = []
+        domains = []
+        versions = []
+        for evaluation_id in payload.evaluation_ids:
+            record = store.get(evaluation_id)
+            if record is None or record.get("kind") != "evaluation" or record.get("status") != "completed":
+                raise HTTPException(status_code=409, detail={"code": "completed_evaluation_required", "message": "all comparison inputs must be completed evaluations"})
+            private_path = store._private_directory(evaluation_id) / "verification.json"
+            try:
+                private = json.loads(private_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=409, detail={"code": "comparison_private_binding_unavailable", "message": "evaluation domain binding is unavailable"}) from exc
+            episode_domains = []
+            for episode in private.get("episodes", []):
+                manifest = episode.get("manifest", {})
+                digest = manifest.get("evaluation_instance_digest")
+                if digest is None:
+                    values = manifest.get("evaluation_instance_digests", [])
+                    digest = values[0] if values else None
+                episode_domains.append(digest)
+            domains.append(tuple(episode_domains))
+            public_episodes = record.get("episodes", [])
+            versions.append(tuple((item.get("environment_version"), item.get("verifier_version")) for item in public_episodes))
+            records.append(record)
+        if any(domain != domains[0] for domain in domains[1:]) or any(version != versions[0] for version in versions[1:]):
+            raise HTTPException(status_code=409, detail={"code": "comparison_schema_or_domain_mismatch", "message": "evaluations must use the same deterministic scenario domain and compatible runtime versions"})
+        models = [{"evaluation_id": item["record_id"], "model_id": item.get("model_id"), "algorithm": item.get("algorithm", "behaviour_cloning")} for item in records]
+        results = [{"evaluation_id": item["record_id"], "aggregate": item.get("aggregate", {})} for item in records]
+        episode_count = len(records[0].get("episodes", []))
+        aligned_instances = []
+        for index in range(episode_count):
+            outcomes = []
+            for item in records:
+                episodes = item.get("episodes", [])
+                if index >= len(episodes):
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "comparison_schema_or_domain_mismatch",
+                            "message": "evaluations must use the same deterministic scenario domain and compatible runtime versions",
+                        },
+                    )
+                result = episodes[index].get("result", {})
+                outcomes.append(
+                    {
+                        "evaluation_id": item["record_id"],
+                        "model_id": item.get("model_id"),
+                        "algorithm": item.get("algorithm", "behaviour_cloning"),
+                        "episode_id": result.get("episode_id"),
+                        "strict_success": bool(result.get("strict_success")),
+                        "score": result.get("score"),
+                        "safety_violation_count": int(result.get("safety_violation_count") or 0),
+                        "verdict": result.get("verdict"),
+                    }
+                )
+            aligned_instances.append({"instance_index": index + 1, "outcomes": outcomes})
+        comparison_id, created = orchestrator.create_completed_comparison(
+            configuration=configuration,
+            payload={
+            "schema_version": "talon.public-model-comparison/1.0", "application_commit": records[0].get("application_commit"),
+            "models": models, "compatibility": {"domain_compatible": True, "runtime_versions_compatible": True},
+            },
+            results={"results": results, "aligned_instances": aligned_instances},
+            depends_on=tuple(payload.evaluation_ids),
+            idempotency_key=idempotency_key,
+        )
+        record = store.get(comparison_id)
+        if record is None:
+            raise HTTPException(status_code=409, detail={"code": "comparison_unavailable", "message": "comparison record is unavailable"})
+        return no_store(public_record_detail(record), status_code=201 if created else 200)
+
+    @router.get("/comparisons/{comparison_id}")
+    async def comparison(comparison_id: str) -> JSONResponse:
+        record = store.get(comparison_id)
+        if record is None or record.get("kind") != "comparison":
+            raise not_found("comparison")
+        return no_store(public_record_detail(record))
 
     @router.get("/exports/{record_id}.json")
     async def export(record_id: str) -> JSONResponse:

@@ -107,23 +107,25 @@ class FrozenModelPolicy:
         )
 
 
-def evaluate_checkpoint(
+def _evaluate_checkpoint_impl(
     checkpoint: Path,
     *,
     family: str,
     seed: int,
-    partition: str | None = None,
-    split: str | None = None,
-    expected_checkpoint_digest: str | None = None,
-    environment_commit: str = "unknown",
-    verifier_commit: str = "unknown",
-    timeout_seconds: int = 30,
-    policy_client: Any | None = None,
-    step_callback: Any | None = None,
+    resolved_partition: str,
+    expected_checkpoint_digest: str,
+    environment_commit: str,
+    verifier_commit: str,
+    timeout_seconds: int,
+    policy_client: Any | None,
+    step_callback: Any | None,
 ) -> dict[str, Any]:
-    resolved_partition = partition or {"dev": "validation", "eval": "evaluation"}.get(str(split), split) or "evaluation"
-    if resolved_partition not in {"validation", "evaluation"}:
-        raise ValueError("frozen evaluation requires validation or evaluation partition")
+    if (
+        not isinstance(expected_checkpoint_digest, str)
+        or not expected_checkpoint_digest.startswith("sha256:")
+        or len(expected_checkpoint_digest) != 71
+    ):
+        raise ValueError("checkpoint digest is missing or malformed")
     config = ScenarioConfig(family_id=family, partition=resolved_partition)  # type: ignore[arg-type]
     instance_digest = scenario_instance_digest(config, seed)
     _, metadata = load_checkpoint(checkpoint, expected_digest=expected_checkpoint_digest)
@@ -136,9 +138,13 @@ def evaluate_checkpoint(
 
         policy_client = IsolatedPolicyClient(
             checkpoint,
-            expected_digest=str(metadata["checkpoint_digest"]),
+            expected_digest=expected_checkpoint_digest,
             timeout_seconds=min(float(timeout_seconds), 10.0),
         )
+    else:
+        client_digest = getattr(policy_client, "expected_digest", None)
+        if client_digest is not None and client_digest != expected_checkpoint_digest:
+            raise ValueError("injected policy client digest does not match the verified checkpoint")
     policy_client.reset()
     env = build_environment(config)
     raw_observation, _ = env.reset(seed=seed, options={"scenario_config": config})
@@ -191,3 +197,71 @@ def evaluate_checkpoint(
             "privileged_result": privileged_result,
         },
     }
+
+
+def evaluate_checkpoint(
+    checkpoint: Path,
+    *,
+    family: str,
+    seed: int,
+    partition: str | None = None,
+    split: str | None = None,
+    expected_checkpoint_digest: str,
+    environment_commit: str = "unknown",
+    verifier_commit: str = "unknown",
+    timeout_seconds: int = 30,
+    step_callback: Any | None = None,
+) -> dict[str, Any]:
+    """Evaluate a behaviour-cloning checkpoint with the isolated production policy client.
+
+    Product API/worker paths cannot inject a foreign ``policy_client``.
+    """
+
+    resolved_partition = partition or {"dev": "validation", "eval": "evaluation"}.get(str(split), split) or "evaluation"
+    if resolved_partition not in {"validation", "evaluation"}:
+        raise ValueError("frozen evaluation requires validation or evaluation partition")
+    return _evaluate_checkpoint_impl(
+        Path(checkpoint),
+        family=family,
+        seed=seed,
+        resolved_partition=resolved_partition,
+        expected_checkpoint_digest=expected_checkpoint_digest,
+        environment_commit=environment_commit,
+        verifier_commit=verifier_commit,
+        timeout_seconds=timeout_seconds,
+        policy_client=None,
+        step_callback=step_callback,
+    )
+
+
+def evaluate_checkpoint_for_tests(
+    checkpoint: Path,
+    *,
+    family: str,
+    seed: int,
+    partition: str | None = None,
+    split: str | None = None,
+    expected_checkpoint_digest: str,
+    environment_commit: str = "unknown",
+    verifier_commit: str = "unknown",
+    timeout_seconds: int = 30,
+    policy_client: Any,
+    step_callback: Any | None = None,
+) -> dict[str, Any]:
+    """Test-only helper that injects a policy client. Not used by API or workers."""
+
+    resolved_partition = partition or {"dev": "validation", "eval": "evaluation"}.get(str(split), split) or "evaluation"
+    if resolved_partition not in {"validation", "evaluation"}:
+        raise ValueError("frozen evaluation requires validation or evaluation partition")
+    return _evaluate_checkpoint_impl(
+        Path(checkpoint),
+        family=family,
+        seed=seed,
+        resolved_partition=resolved_partition,
+        expected_checkpoint_digest=expected_checkpoint_digest,
+        environment_commit=environment_commit,
+        verifier_commit=verifier_commit,
+        timeout_seconds=timeout_seconds,
+        policy_client=policy_client,
+        step_callback=step_callback,
+    )

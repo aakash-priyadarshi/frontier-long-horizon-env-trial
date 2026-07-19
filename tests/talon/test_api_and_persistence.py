@@ -41,6 +41,12 @@ def _crash_worker() -> None:
     os._exit(17)
 
 
+def _buffered_complete_worker(queue) -> None:
+    for step in range(32):
+        queue.put({"type": "progress", "data": {"step": step}})
+    queue.put({"type": "completed", "data": {"diagnostic": "buffer-drained"}})
+
+
 async def wait_for(orchestrator: TalonOrchestrator, record_id: str) -> dict[str, object]:
     await orchestrator.wait(record_id)
     record = orchestrator.store.get(record_id)
@@ -241,6 +247,22 @@ async def test_worker_crash_and_concurrent_cancellation_have_one_terminal_outcom
     assert cancelled["status"] == "cancelled"
     assert [event.event_type for event in store.events_after("talon_training", training_id)].count("terminal") == 1
     assert orchestrator.cancel(training_id) is False
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_exit_drains_buffered_messages_before_crash_classification(tmp_path: Path) -> None:
+    store = TalonStore(tmp_path / "talon.sqlite3")
+    orchestrator = TalonOrchestrator(store)
+    record_id = orchestrator.create_dataset(DatasetCreate(), start_background=False)
+    job = orchestrator._jobs[record_id]
+    job.process = orchestrator._context.Process(target=_buffered_complete_worker, args=(job.queue,))
+    await orchestrator._monitor(record_id)
+    record = store.get(record_id)
+    assert record is not None
+    assert record["status"] == "completed"
+    assert record["diagnostic"] == "buffer-drained"
+    assert [event.event_type for event in store.events_after("talon_dataset", record_id)].count("terminal") == 1
     store.close()
 
 

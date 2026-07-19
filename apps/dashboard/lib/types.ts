@@ -336,7 +336,7 @@ export type TalonCapability = {
 
 export type TalonRecord = {
   record_id: string;
-  kind: "dataset" | "training" | "evaluation";
+  kind: "dataset" | "training" | "evaluation" | "comparison";
   status: string;
   created_at: string;
   ended_at?: string;
@@ -348,21 +348,45 @@ export type TalonRecord = {
     epochs?: number;
     loss?: number | null;
     training_action_accuracy?: number | null;
+    reward_td_loss?: number | null;
+    safety_td_loss?: number | null;
+    cql_penalty?: number | null;
+    invalid_cost_margin?: number | null;
     completed_episodes?: number;
     total_episodes?: number;
   };
   dataset_digest?: string;
   trajectory_count?: number;
-  architecture?: "gru" | "decision_transformer";
+  architecture?: "gru" | "decision_transformer" | "cql_gru";
+  algorithm?: "behaviour_cloning" | "discrete_cql";
+  algorithm_version?: string;
+  offline_dataset_digest?: string;
+  transition_count?: number;
+  hardware?: string;
   parameter_count?: number;
   model_id?: string;
   checkpoint_digest?: string;
   training_metrics?: {
     loss: number;
-    training_action_accuracy: number;
+    training_action_accuracy?: number;
     validation_action_accuracy: number;
+    reward_td_loss?: number;
+    safety_td_loss?: number;
+    cql_penalty?: number;
+    invalid_cost_margin?: number;
+    mean_reward_q?: number;
+    mean_safety_q?: number;
   };
-  training_history?: { loss: number[]; training_action_accuracy: number[] };
+  training_history?: {
+    loss: number[];
+    training_action_accuracy?: number[];
+    reward_td_loss?: number[];
+    safety_td_loss?: number[];
+    cql_penalty?: number[];
+    invalid_cost_margin?: number[];
+    mean_reward_q?: number[];
+    mean_safety_q?: number[];
+  };
   aggregate?: {
     episode_count: number;
     strict_success_count: number;
@@ -375,9 +399,44 @@ export type TalonRecord = {
     missed_threat_rate: number;
     expected_calibration_error: number;
     held_out_action_accuracy: number;
+    gate_intervention_rate?: number;
+    invalid_action_rate?: number;
+    worst_case_score?: number;
+    pair_consistency_rate?: number;
+    stale_evidence_rate?: number;
+    evidence_efficiency?: number;
+    approval_correctness?: number;
+    average_action_count?: number;
+    average_elapsed_ms?: number;
   };
   episodes?: TalonEpisode[];
   error_category?: string;
+  models?: Array<{
+    evaluation_id: string;
+    model_id?: string | null;
+    algorithm?: "behaviour_cloning" | "discrete_cql" | string;
+  }>;
+  compatibility?: {
+    domain_compatible?: boolean;
+    runtime_versions_compatible?: boolean;
+  };
+  results?: Array<{
+    evaluation_id: string;
+    aggregate?: TalonRecord["aggregate"];
+  }>;
+  aligned_instances?: Array<{
+    instance_index: number;
+    outcomes: Array<{
+      evaluation_id: string;
+      model_id?: string | null;
+      algorithm?: string;
+      episode_id?: string;
+      strict_success: boolean;
+      score?: number | null;
+      safety_violation_count: number;
+      verdict?: string | null;
+    }>;
+  }>;
 };
 
 export type TalonEpisode = {
@@ -413,4 +472,72 @@ export type TalonEpisode = {
     terminated: boolean;
     truncated: boolean;
   }>;
+  replay?: TalonReplay;
+};
+
+export type TalonReplayActionScore = {
+  action: string;
+  operational_q: number;
+  safety_q: number;
+  publicly_valid: boolean;
+  below_safety_threshold: boolean;
+};
+
+export type TalonReplayStep = {
+  schema_version: string;
+  sequence: number;
+  simulated_time_ms: number;
+  observation: Record<string, unknown> & {
+    track_id: string;
+    distance_m: number;
+    approach_rate_mps: number;
+    classification_confidence: number;
+    detection_confidence: number;
+    pending_evidence: string[];
+  };
+  evidence_pending: string[];
+  evidence_completed: string[];
+  raw_action: string;
+  action_confidence: number;
+  abstained: boolean;
+  top_action_scores: TalonReplayActionScore[];
+  gate: {
+    accepted: boolean;
+    requested_action: string;
+    effective_action: string;
+    violation_codes: string[];
+    reason_codes: string[];
+    human_approval_required: boolean;
+    approval_consumed: boolean;
+    external_effect: boolean;
+  };
+  effective_action: string;
+  approval: { status: string; approval_id: string | null; expires_at_ms: number | null; consumed: boolean };
+  terminated: boolean;
+  truncated: boolean;
+};
+
+export type TalonReplay = {
+  schema_version: string;
+  replay_id: string;
+  replay_digest: string;
+  evaluation_id: string;
+  episode_id: string;
+  checkpoint_digest: string;
+  environment_version: string;
+  verifier_version: string;
+  terminal: true;
+  metrics: {
+    strict_success: boolean;
+    score: number;
+    safety_violation_count: number;
+    action_count: number;
+    abstention_rate: number;
+    gate_intervention_rate: number;
+    approval_correctness: number;
+    evidence_efficiency: number;
+    expected_calibration_error: number;
+    failed_categories: string[];
+  };
+  steps: TalonReplayStep[];
 };

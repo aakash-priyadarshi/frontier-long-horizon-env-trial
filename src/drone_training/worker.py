@@ -7,12 +7,22 @@ import os
 import platform
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from drone_decision_ground.actions import ACTION_SCHEMA_VERSION
 
 from .datasets import generate_dataset, load_dataset
 from .manifests import TrainingManifest, write_immutable_json
+
+
+# Private in-process race-test hook. Spawned workers do not inherit callables.
+_TEST_PHASE_HOOK: Callable[[str], None] | None = None
+
+
+def _emit_phase(phase: str) -> None:
+    hook = _TEST_PHASE_HOOK
+    if hook is not None:
+        hook(phase)
 
 
 def _send(queue: Any, event_type: str, data: dict[str, Any]) -> None:
@@ -45,6 +55,130 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
             return
 
         dataset = load_dataset(Path(paths["dataset"]))
+        if operation == "offline_training":
+            import torch
+
+            from .offline_checkpoints import save_offline_checkpoint
+            from .offline_rl import (
+                CQLConfig,
+                derive_offline_dataset,
+                frozen_cql_action_accuracy,
+                train_discrete_cql,
+            )
+
+            config = CQLConfig(
+                context_length=int(request["context_length"]),
+                hidden_dim=int(request["hidden_dim"]),
+                layers=int(request["layers"]),
+                dropout=float(request["dropout"]),
+                gamma=float(request["gamma"]),
+                cql_alpha=float(request["cql_alpha"]),
+                safety_threshold=float(request["safety_threshold"]),
+                learning_rate=float(request["learning_rate"]),
+                batch_size=int(request["batch_size"]),
+                epochs=int(request["epochs"]),
+                target_update_interval=int(request["target_update_interval"]),
+                gradient_clip=float(request["gradient_clip"]),
+                random_seed=int(request["random_seed"]),
+            )
+            offline_dataset = derive_offline_dataset(dataset, context_length=config.context_length)
+            if cancelled.is_set():
+                raise InterruptedError
+            write_immutable_json(Path(paths["offline_dataset"]), offline_dataset)
+
+            def on_epoch(epoch: int, metrics: dict[str, float]) -> None:
+                _send(queue, "progress", {"epoch": epoch, "epochs": config.epochs, **metrics})
+
+            model, target, history = train_discrete_cql(
+                offline_dataset,
+                config,
+                epoch_callback=on_epoch,
+                cancelled=cancelled.is_set,
+            )
+            _emit_phase("after_train")
+            if cancelled.is_set():
+                raise InterruptedError
+            # Re-check after the slow validation partition build: a cancel that
+            # arrives post-training must not publish a checkpoint.
+            _emit_phase("before_validation")
+            validation = generate_dataset(
+                partition="validation",
+                seeds=dataset.manifest.seeds,
+                families=dataset.manifest.scenario_families,
+            )
+            if cancelled.is_set():
+                raise InterruptedError
+            validation_accuracy = frozen_cql_action_accuracy(
+                model,
+                validation,
+                training_normalization=offline_dataset.manifest.normalization,
+                context_length=config.context_length,
+                safety_threshold=config.safety_threshold,
+            )
+            _emit_phase("after_validation")
+            if cancelled.is_set():
+                raise InterruptedError
+            training_updates = int((history.pop("training_updates", [0.0]) or [0.0])[-1])
+            _emit_phase("before_save")
+            checkpoint_digest = save_offline_checkpoint(
+                Path(paths["checkpoint"]),
+                model=model,
+                target=target,
+                dataset=offline_dataset,
+                config=config,
+                training_history=history,
+                training_updates=training_updates,
+                should_abort=cancelled.is_set,
+            )
+            _emit_phase("after_publish")
+            # Once the checkpoint hard-link has published, completion wins even if
+            # a soft-cancel arrives before the terminal SSE is registered.
+            if cancelled.is_set() and not Path(paths["checkpoint"]).is_file():
+                raise InterruptedError
+            parameter_count = sum(item.numel() for item in model.parameters())
+            hardware = torch.cuda.get_device_name(0) if torch.cuda.is_available() else platform.processor() or "cpu"
+            from .bindings import logical_checkpoint_identity
+
+            artifact_identity = logical_checkpoint_identity(str(request["run_id"]))
+            manifest = {
+                "schema_version": "talon.private-offline-rl-training-manifest/1.0",
+                "training_run_id": request["run_id"],
+                "algorithm": "discrete_cql",
+                "algorithm_version": "talon.discrete-cql/1.0",
+                "source_dataset_digest": dataset.manifest.dataset_digest,
+                "offline_dataset_digest": offline_dataset.manifest.dataset_digest,
+                "dataset_digest_verification": "recomputed",
+                "training_instance_digests": list(dataset.manifest.scenario_instance_digests),
+                "seed_domain_digest": dataset.manifest.seed_domain_digest,
+                "frozen_validation_partition": "validation",
+                "configuration": config.__dict__,
+                "checkpoint_digest": checkpoint_digest,
+                "artifact_identity": artifact_identity,
+                "parameter_count": parameter_count,
+                "hardware": hardware,
+                "software_versions": {"python": platform.python_version(), "torch": torch.__version__},
+            }
+            write_immutable_json(Path(paths["manifest"]), manifest)
+            _send(queue, "completed", {
+                "model_id": request["run_id"],
+                "architecture": "cql_gru",
+                "algorithm": "discrete_cql",
+                "algorithm_version": "talon.discrete-cql/1.0",
+                "parameter_count": parameter_count,
+                "checkpoint_digest": checkpoint_digest,
+                "artifact_identity": artifact_identity,
+                "dataset_digest": dataset.manifest.dataset_digest,
+                "offline_dataset_digest": offline_dataset.manifest.dataset_digest,
+                "transition_count": offline_dataset.manifest.transition_count,
+                "training_metrics": {
+                    **{key: values[-1] for key, values in history.items()},
+                    "validation_action_accuracy": validation_accuracy,
+                    "training_updates": training_updates,
+                },
+                "training_history": history,
+                "hardware": hardware,
+            })
+            return
         if operation == "training":
             import torch
 
@@ -75,16 +209,20 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                 epoch_callback=on_epoch,
                 cancelled=cancelled.is_set,
             )
+            _emit_phase("after_train")
             if cancelled.is_set():
                 raise InterruptedError
             normalization = dataset.manifest.normalization
             if normalization is None:
                 raise ValueError("training dataset lacks normalization")
+            _emit_phase("before_validation")
             validation_dataset = generate_dataset(
                 partition="validation",
                 seeds=dataset.manifest.seeds,
                 families=dataset.manifest.scenario_families,
             )
+            if cancelled.is_set():
+                raise InterruptedError
             validation_accuracy = frozen_action_accuracy(
                 model,
                 validation_dataset,
@@ -92,6 +230,10 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                 context_length=config.context_length,
                 training_normalization=normalization,
             )
+            _emit_phase("after_validation")
+            if cancelled.is_set():
+                raise InterruptedError
+            _emit_phase("before_save")
             checkpoint_digest = save_checkpoint(
                 Path(paths["checkpoint"]),
                 model=model,
@@ -105,9 +247,16 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                     sum(step.training_reward for step in trajectory.steps)
                     for trajectory in dataset.trajectories
                 ),
+                should_abort=cancelled.is_set,
             )
+            _emit_phase("after_publish")
+            if cancelled.is_set() and not Path(paths["checkpoint"]).is_file():
+                raise InterruptedError
             source = str(request["application_commit"])
             hardware = torch.cuda.get_device_name(0) if torch.cuda.is_available() else platform.processor() or "cpu"
+            from .bindings import logical_checkpoint_identity
+
+            artifact_identity = logical_checkpoint_identity(str(request["run_id"]))
             manifest = TrainingManifest(
                 training_run_id=str(request["run_id"]),
                 dataset_digest=dataset.manifest.dataset_digest,
@@ -139,6 +288,7 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                     "architecture": config.architecture,
                     "parameter_count": parameter_count(model),
                     "checkpoint_digest": checkpoint_digest,
+                    "artifact_identity": artifact_identity,
                     "training_metrics": {
                         **{key: values[-1] for key, values in history.items()},
                         "validation_action_accuracy": validation_accuracy,
@@ -148,39 +298,90 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
             )
             return
 
-        if operation == "evaluation":
+        if operation in {"evaluation", "offline_evaluation"}:
             from drone_decision_verifier.hidden_scenarios import HIDDEN_FAMILY_KEYS
 
             from .behaviour_cloning import frozen_action_accuracy
+            from .bindings import (
+                BindingSource,
+                TrustedCheckpointBinding,
+                require_dataset_bindings,
+                resolve_bound_checkpoint,
+            )
             from .checkpoints import load_checkpoint
             from .evaluation import evaluate_checkpoint
             from .policy_isolation import IsolatedPolicyClient
 
+            offline = operation == "offline_evaluation"
+            if offline:
+                from .offline_evaluation import evaluate_offline_checkpoint
+                from .offline_policy_isolation import IsolatedCQLPolicyClient
+
+            # Reject worker-payload injection of policy clients or alternate digests:
+            # resolve solely from the orchestrator-supplied immutable binding fields.
+            if "policy_client" in request:
+                raise ValueError("worker payloads cannot inject a policy client")
+            training_run_id = str(request["training_run_id"])
+            artifact_identity = str(request.get("artifact_identity") or f"{training_run_id}/checkpoint.pt")
+            binding = TrustedCheckpointBinding(
+                training_run_id=training_run_id,
+                checkpoint_id=training_run_id,
+                trusted_digest=str(request["checkpoint_digest"]),
+                artifact_identity=artifact_identity,
+                binding_source=BindingSource.IMMUTABLE_DB_RECORD,
+                offline_dataset_digest=(
+                    str(request["offline_dataset_digest"]) if request.get("offline_dataset_digest") else None
+                ),
+                source_dataset_digest=(
+                    str(request["dataset_digest"]) if request.get("dataset_digest") else None
+                ),
+            )
+            private_root = Path(paths["data_root"]) / "private"
+            checkpoint_path = resolve_bound_checkpoint(private_root, binding, require_digest_match=True)
+            offline_dataset_digest: str | None = None
+            source_dataset_digest: str | None = None
+            if offline:
+                offline_dataset_digest, source_dataset_digest = require_dataset_bindings(binding)
+
             public_episodes: list[dict[str, Any]] = []
             private_episodes: list[dict[str, Any]] = []
+            episode_domains: list[tuple[str, int, bool]] = []
             source = str(request["application_commit"])
             total = len(HIDDEN_FAMILY_KEYS) * int(request["seed_count"])
-            with IsolatedPolicyClient(
-                Path(paths["checkpoint"]),
-                expected_digest=str(request["checkpoint_digest"]),
-                timeout_seconds=min(10.0, float(request["timeout_seconds"])),
-            ) as policy:
-                if not all(policy.probe().values()):
-                    raise RuntimeError("policy isolation probe failed")
-                for family in HIDDEN_FAMILY_KEYS:
-                    for seed in range(int(request["seed_start"]), int(request["seed_start"]) + int(request["seed_count"])):
-                        if cancelled.is_set():
-                            raise InterruptedError
-                        episode = evaluate_checkpoint(
-                            Path(paths["checkpoint"]),
+            # Probe isolation once; each episode evaluation constructs its own
+            # production Isolated*PolicyClient (no injectable policy_client seam).
+            if offline:
+                with IsolatedCQLPolicyClient(
+                    checkpoint_path,
+                    expected_digest=binding.trusted_digest,
+                    expected_offline_dataset_digest=offline_dataset_digest,
+                    expected_source_dataset_digest=source_dataset_digest,
+                    timeout_seconds=min(10.0, float(request["timeout_seconds"])),
+                ) as probe_client:
+                    if not all(probe_client.probe().values()):
+                        raise RuntimeError("policy isolation probe failed")
+            else:
+                with IsolatedPolicyClient(
+                    checkpoint_path,
+                    expected_digest=binding.trusted_digest,
+                    timeout_seconds=min(10.0, float(request["timeout_seconds"])),
+                ) as probe_client:
+                    if not all(probe_client.probe().values()):
+                        raise RuntimeError("policy isolation probe failed")
+            for family in HIDDEN_FAMILY_KEYS:
+                for seed in range(int(request["seed_start"]), int(request["seed_start"]) + int(request["seed_count"])):
+                    if cancelled.is_set():
+                        raise InterruptedError
+                    if offline:
+                        episode = evaluate_offline_checkpoint(
+                            binding=binding,
+                            private_root=private_root,
                             family=family,
                             seed=seed,
                             partition="evaluation",
-                            expected_checkpoint_digest=str(request["checkpoint_digest"]),
                             environment_commit=source,
                             verifier_commit=source,
                             timeout_seconds=max(1, int(request["timeout_seconds"])),
-                            policy_client=policy,
                             step_callback=lambda step: _send(
                                 queue,
                                 "timeline_step",
@@ -190,21 +391,41 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                                 },
                             ),
                         )
-                        public_episodes.append(episode["public"])
-                        private_episodes.append(episode["private"])
-                        result = episode["public"]["result"]
-                        _send(
-                            queue,
-                            "episode",
-                            {
-                                "completed_episodes": len(public_episodes),
-                                "total_episodes": total,
-                                "episode_id": result["episode_id"],
-                                "score": result["score"],
-                                "strict_success": result["strict_success"],
-                                "safety_violation_count": result["safety_violation_count"],
-                            },
+                    else:
+                        episode = evaluate_checkpoint(
+                            checkpoint_path,
+                            family=family,
+                            seed=seed,
+                            partition="evaluation",
+                            expected_checkpoint_digest=binding.trusted_digest,
+                            environment_commit=source,
+                            verifier_commit=source,
+                            timeout_seconds=max(1, int(request["timeout_seconds"])),
+                            step_callback=lambda step: _send(
+                                queue,
+                                "timeline_step",
+                                {
+                                    "episode_id": step["observation"]["episode_id"],
+                                    "step": step,
+                                },
+                            ),
                         )
+                    public_episodes.append(episode["public"])
+                    private_episodes.append(episode["private"])
+                    result = episode["public"]["result"]
+                    episode_domains.append((family, seed, bool(result["strict_success"])))
+                    _send(
+                        queue,
+                        "episode",
+                        {
+                            "completed_episodes": len(public_episodes),
+                            "total_episodes": total,
+                            "episode_id": result["episode_id"],
+                            "score": result["score"],
+                            "strict_success": result["strict_success"],
+                            "safety_violation_count": result["safety_violation_count"],
+                        },
+                    )
             write_immutable_json(
                 Path(paths["private_evaluation"]),
                 {"schema_version": "talon.private-evaluation-batch/2.0", "episodes": private_episodes},
@@ -241,22 +462,52 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
 
             evaluation_dataset = generate_dataset(
                 partition="evaluation",
-                seeds=range(
-                    int(request["seed_start"]),
-                    int(request["seed_start"]) + int(request["seed_count"]),
-                ),
+                seeds=range(int(request["seed_start"]), int(request["seed_start"]) + int(request["seed_count"])),
             )
-            frozen_model, frozen_metadata = load_checkpoint(
-                Path(paths["checkpoint"]),
-                expected_digest=str(request["checkpoint_digest"]),
-            )
-            held_out_accuracy = frozen_action_accuracy(
-                frozen_model,
-                evaluation_dataset,
-                architecture=str(frozen_metadata["architecture"]),
-                context_length=int(frozen_metadata["context_length"]),
-                training_normalization=frozen_metadata["normalization"],
-            )
+            if offline:
+                from .offline_checkpoints import load_offline_checkpoint
+                from .offline_rl import frozen_cql_action_accuracy
+
+                frozen_model, _frozen_target, frozen_metadata = load_offline_checkpoint(
+                    checkpoint_path,
+                    expected_digest=binding.trusted_digest,
+                    expected_offline_dataset_digest=offline_dataset_digest,
+                    expected_source_dataset_digest=source_dataset_digest,
+                )
+                held_out_accuracy = frozen_cql_action_accuracy(
+                    frozen_model,
+                    evaluation_dataset,
+                    training_normalization=frozen_metadata["normalization"],
+                    context_length=int(frozen_metadata["context_length"]),
+                    safety_threshold=float(frozen_metadata["safety_threshold"]),
+                )
+            else:
+                frozen_model, frozen_metadata = load_checkpoint(
+                    checkpoint_path,
+                    expected_digest=binding.trusted_digest,
+                )
+                held_out_accuracy = frozen_action_accuracy(
+                    frozen_model,
+                    evaluation_dataset,
+                    architecture=str(frozen_metadata["architecture"]),
+                    context_length=int(frozen_metadata["context_length"]),
+                    training_normalization=frozen_metadata["normalization"],
+                )
+            total_actions = sum(len(item["timeline"]) for item in public_episodes)
+            evidence_actions = {
+                "REQUEST_SENSOR_CONFIRMATION", "REQUEST_COMMAND_LINK_VERIFICATION",
+                "CHECK_AUTHORISED_FLIGHT_DATABASE", "REQUEST_REMOTE_ID_VERIFICATION",
+                "INCREASE_TRACK_PRIORITY", "CONTINUE_OBSERVATION",
+            }
+            approval_attempts = [
+                step for item in public_episodes for step in item["timeline"]
+                if step["gate"]["human_approval_required"]
+            ]
+            pair_by_seed: dict[int, dict[str, bool]] = {}
+            for family, seed, success in episode_domains:
+                if family in {"authorised_inspection", "perimeter_probing"}:
+                    pair_by_seed.setdefault(seed, {})[family] = success
+            complete_pairs = [value for value in pair_by_seed.values() if len(value) == 2]
             aggregate = {
                 "episode_count": episode_count,
                 "strict_success_count": strict_count,
@@ -276,12 +527,35 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                     for item in public_episodes
                 ) / episode_count if episode_count else 0.0,
                 "held_out_action_accuracy": held_out_accuracy,
+                "gate_intervention_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"] if not step["gate"]["accepted"]
+                ) / max(1, total_actions),
+                "invalid_action_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"] if step["gate"]["violation_codes"]
+                ) / max(1, total_actions),
+                "stale_evidence_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"]
+                    if any("stale" in code or code.startswith("fresh_") for code in step["gate"]["violation_codes"])
+                ) / max(1, total_actions),
+                "evidence_efficiency": 1.0 - sum(
+                    1 for item in public_episodes for step in item["timeline"]
+                    if step["recommendation"]["recommended_action"] in evidence_actions
+                ) / max(1, total_actions),
+                "approval_correctness": (
+                    sum(1 for step in approval_attempts if step["gate"]["accepted"] and step["gate"]["approval_consumed"]) / len(approval_attempts)
+                    if approval_attempts else 1.0
+                ),
+                "average_action_count": total_actions / max(1, episode_count),
+                "average_elapsed_ms": sum(float(item.get("elapsed_ms", 0.0)) for item in public_episodes) / max(1, episode_count),
+                "worst_case_score": min((float(item["result"]["score"]) for item in public_episodes), default=0.0),
+                "pair_consistency_rate": sum(1 for value in complete_pairs if all(value.values())) / len(complete_pairs) if complete_pairs else 0.0,
             }
             _send(
                 queue,
                 "completed",
                 {
                     "model_id": request["training_run_id"],
+                    "algorithm": "discrete_cql" if offline else "behaviour_cloning",
                     "episodes": public_episodes,
                     "aggregate": aggregate,
                 },
