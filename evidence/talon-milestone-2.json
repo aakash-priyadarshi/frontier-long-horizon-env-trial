@@ -1,0 +1,442 @@
+{
+  "branch": "feature/talon-offline-rl-and-replay",
+  "checks": {
+    "bc_checkpoint_compatibility": {
+      "classification": "dynamically_executed",
+      "decision_transformer": {
+        "action_schema_mismatch_rejected": true,
+        "architecture_config_mismatch_rejected": true,
+        "environment_mismatch_rejected": true,
+        "feature_schema_mismatch_rejected": true,
+        "missing_environment_rejected": true,
+        "missing_verifier_rejected": true,
+        "passed": true,
+        "valid_load": true,
+        "verifier_mismatch_rejected": true
+      },
+      "gru": {
+        "action_schema_mismatch_rejected": true,
+        "architecture_config_mismatch_rejected": true,
+        "environment_mismatch_rejected": true,
+        "feature_schema_mismatch_rejected": true,
+        "missing_environment_rejected": true,
+        "missing_verifier_rejected": true,
+        "passed": true,
+        "valid_load": true,
+        "verifier_mismatch_rejected": true
+      },
+      "missing_architectures": [],
+      "passed": true
+    },
+    "dynamic_offline_rl": {
+      "checks": {
+        "action_schema_has_13_actions": true,
+        "attacker_digest_differs_from_record": true,
+        "caller_supplied_digest_is_not_provenance": true,
+        "cancel_blocks_complete_when_cancelling": true,
+        "complete_can_win_over_soft_cancel": true,
+        "cross_dataset_substitution_rejected": true,
+        "cross_run_substitution_rejected": true,
+        "deterministic_training": true,
+        "distinct_checkpoint_digests": true,
+        "distinct_offline_dataset_digests": true,
+        "empty_safe_set_abstains": true,
+        "environment_verifier_versions_bound": true,
+        "eval_requires_trusted_digest": true,
+        "immutable_record_digest_unwritable": true,
+        "immutable_record_rewrite_rejected": true,
+        "incomplete_target_rejected": true,
+        "inspect_expected_digest_required": true,
+        "inspect_requires_trusted_digest": true,
+        "load_expected_digest_required": true,
+        "mutation_rejected": true,
+        "offline_digest_recomputed": true,
+        "public_probe_has_no_hidden_state": true,
+        "second_complete_rejected": true,
+        "source_digest_recomputed": true,
+        "static_transitions_only": true,
+        "target_net_keys_on_disk": true,
+        "target_net_present_in_schema": true,
+        "two_completed_runs_distinct": true
+      },
+      "classification": "dynamically_executed",
+      "passed": true
+    },
+    "frontier_integrity": {
+      "classification": "git_integrity",
+      "evidence_tree_unchanged": {
+        "classification": "git_diff",
+        "passed": true
+      },
+      "frontier_scoring_freeze": {
+        "classification": "git_diff",
+        "note": "Frontier scoring freeze via training_ground/strict_verifier unchanged",
+        "passed": true,
+        "paths": [
+          "src/training_ground",
+          "src/strict_verifier"
+        ]
+      },
+      "integrity_method": "git_blob_identity",
+      "milestone_1_receipt": {
+        "classification": "git_blob_identity",
+        "committed_oid": "2e018585be19b0bd625f9204fc807574437bc1c8",
+        "git_diff_quiet": true,
+        "integrity_method": "git_blob_identity",
+        "passed": true,
+        "working_oid": "2e018585be19b0bd625f9204fc807574437bc1c8"
+      },
+      "passed": true
+    },
+    "milestone_1_receipt_unchanged": {
+      "classification": "git_blob_identity",
+      "committed_oid": "2e018585be19b0bd625f9204fc807574437bc1c8",
+      "git_diff_quiet": true,
+      "integrity_method": "git_blob_identity",
+      "passed": true,
+      "working_oid": "2e018585be19b0bd625f9204fc807574437bc1c8"
+    },
+    "physical_response_boundary": {
+      "classification": "static_source_scan",
+      "files_scanned": 57,
+      "forbidden_hits": [],
+      "passed": true
+    },
+    "playwright": {
+      "browser": "chromium",
+      "classification": "dynamically_executed",
+      "complete": {
+        "command": "npm run test:e2e -- --browser=chromium --reporter=json --workers=1",
+        "count": 24,
+        "duration_seconds": 161.843,
+        "exit_code": 0,
+        "passed": true,
+        "result": "dynamically_executed",
+        "skipped": 0
+      },
+      "component_count_consistent": true,
+      "frontier": {
+        "command": "npm run test:e2e -- --browser=chromium --reporter=json --workers=1 e2e/scripted-evaluation.spec.ts",
+        "count": 12,
+        "duration_seconds": 44.375,
+        "exit_code": 0,
+        "passed": true,
+        "result": "dynamically_executed",
+        "skipped": 0
+      },
+      "missing_components": [],
+      "note": "Full evidence mode requires executed Playwright results with workers=1 and skipped=0; --check-only populates counts via playwright test --list.",
+      "passed": true,
+      "real_browser": true,
+      "result": "dynamically_executed",
+      "skipped": 0,
+      "talon": {
+        "command": "npm run test:e2e -- --browser=chromium --reporter=json --workers=1 e2e/talon.spec.ts",
+        "count": 12,
+        "duration_seconds": 122.907,
+        "exit_code": 0,
+        "passed": true,
+        "result": "dynamically_executed",
+        "skipped": 0
+      },
+      "workers": 1
+    },
+    "product_hardenings": {
+      "checks": {
+        "artifact_identity_rejects_traversal": {
+          "classification": "dynamically_executed",
+          "passed": true
+        },
+        "cli_binding_source_is_not_immutable_db": {
+          "classification": "dynamically_executed",
+          "passed": true
+        },
+        "expected_offline_dataset_digest_binding": {
+          "classification": "dynamically_executed",
+          "forged_binding_rejected": true,
+          "load_forged_digest_rejected": true,
+          "passed": true
+        },
+        "for_tests_helper_not_used_by_product": {
+          "classification": "static_source_inspection",
+          "for_tests_accepts_policy_client": true,
+          "for_tests_exists": true,
+          "passed": true,
+          "product_path_hits": []
+        },
+        "imports_available": {
+          "classification": "dynamically_executed",
+          "passed": true
+        },
+        "mark_active_interrupted_cleans_orphan_checkpoints": {
+          "classification": "dynamically_executed",
+          "passed": true
+        },
+        "policy_client_signature_absent": {
+          "classification": "static_source_inspection",
+          "passed": true
+        },
+        "product_policy_client_injection_rejected": {
+          "classification": "dynamically_executed",
+          "passed": true,
+          "probes": {
+            "evaluation_create_payload_rejects_extras": {
+              "classification": "dynamically_executed",
+              "passed": true
+            },
+            "evaluation_create_rejects_policy_client": {
+              "classification": "dynamically_executed",
+              "passed": true
+            },
+            "foreign_weight_client_rejected": {
+              "classification": "dynamically_executed",
+              "passed": true
+            },
+            "worker_rejects_policy_client_key": {
+              "classification": "dynamically_executed",
+              "error_category": "offline_evaluation_failure",
+              "guard_present_in_run_job_source": true,
+              "passed": true
+            }
+          }
+        },
+        "resolve_bound_checkpoint_rejects_missing": {
+          "classification": "dynamically_executed",
+          "passed": true
+        }
+      },
+      "notes": {
+        "cli_binding_source_is_not_immutable_db": "Raw CLI digest uses BindingSource.CLI_OPERATOR_SUPPLIED and is not claimed as DB provenance"
+      },
+      "passed": true
+    },
+    "receipt_completeness": {
+      "bc_checkpoint_compatibility_problems": [],
+      "classification": "receipt_schema",
+      "evidence_top_level_problems": [],
+      "frontier_integrity_method_ok": true,
+      "missing_check_keys": [],
+      "missing_dynamic_proof_keys": [],
+      "missing_product_hardening_keys": [],
+      "missing_top_level_keys": [],
+      "passed": true,
+      "playwright_schema_problems": [],
+      "product_hardening_classification_problems": [],
+      "suite_verification_problems": []
+    },
+    "suite_verification": {
+      "classification": "dynamically_executed",
+      "commands": [
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test python -m pytest tests/talon -q",
+          "duration_seconds": 129.375,
+          "exit_code": 0,
+          "name": "talon_python",
+          "passed": true,
+          "test_count": 191
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test python -m pytest tests -q",
+          "duration_seconds": 431.641,
+          "exit_code": 0,
+          "name": "complete_python",
+          "passed": true,
+          "test_count": 549
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "npm test -- --run",
+          "duration_seconds": 16.625,
+          "exit_code": 0,
+          "name": "dashboard_unit",
+          "passed": true,
+          "test_count": 50
+        },
+        {
+          "classification": "static",
+          "command": "npm run lint",
+          "duration_seconds": 15.031,
+          "exit_code": 0,
+          "name": "dashboard_lint",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "npm run typecheck",
+          "duration_seconds": 2.766,
+          "exit_code": 0,
+          "name": "dashboard_typecheck",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "npm run build",
+          "duration_seconds": 25.25,
+          "exit_code": 0,
+          "name": "dashboard_build",
+          "passed": true
+        },
+        {
+          "classification": "dependency_scan",
+          "command": "npm audit --audit-level=high",
+          "duration_seconds": 1.906,
+          "exit_code": 0,
+          "name": "npm_audit",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "python -m compileall -q src scripts tests",
+          "duration_seconds": 0.344,
+          "exit_code": 0,
+          "name": "compileall",
+          "passed": true
+        },
+        {
+          "classification": "dependency_scan",
+          "command": "uv lock --check",
+          "duration_seconds": 0.125,
+          "exit_code": 0,
+          "name": "uv_lock",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "git diff --check",
+          "duration_seconds": 0.093,
+          "exit_code": 0,
+          "name": "diff_check",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training generate-dataset --output <temp>\\dataset.json --partition train --seed-start 0 --seed-count 1 --family authorised_inspection --timeout-seconds 120",
+          "duration_seconds": 4.407,
+          "exit_code": 0,
+          "name": "cli_generate_dataset",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training train-gru --dataset <temp>\\dataset.json --output-dir <temp>\\train-gru --epochs 1 --batch-size 8 --context-length 4",
+          "duration_seconds": 7.687,
+          "exit_code": 0,
+          "name": "cli_train_gru",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training train-decision-transformer --dataset <temp>\\dataset.json --output-dir <temp>\\train-dt --epochs 1 --batch-size 8 --context-length 4",
+          "duration_seconds": 6.844,
+          "exit_code": 0,
+          "name": "cli_train_decision_transformer",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training train-cql --dataset <temp>\\dataset.json --output-dir <temp>\\train-cql --epochs 1 --batch-size 16 --context-length 4 --hidden-dim 8 --layers 1 --dropout 0 --target-update-interval 2 --timeout-seconds 300",
+          "duration_seconds": 6.453,
+          "exit_code": 0,
+          "name": "cli_train_cql",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training inspect-offline-dataset --dataset <temp>\\train-cql\\talon_cql_c3bf91662ac4f4f16e148b9b77f5e4c3\\offline_dataset.json",
+          "duration_seconds": 2.203,
+          "exit_code": 0,
+          "name": "cli_inspect_offline_dataset",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training inspect-offline-checkpoint --checkpoint <temp>\\train-cql\\talon_cql_c3bf91662ac4f4f16e148b9b77f5e4c3\\checkpoint.pt --trusted-checkpoint-digest sha256:9fea755c72aee3950be6d7d6e25e49ccd976be5141451e7f7f8d7a6d23568ead --offline-dataset-digest sha256:3f33993c6d67c1b9080e2389940de7465867f3210b99eeff6115ed25a6e4a320 --source-dataset-digest sha256:4338d7b100d36ee7b59242268ec011fb695d297c386a3cb5fd02e110303de58b",
+          "duration_seconds": 2.047,
+          "exit_code": 0,
+          "name": "cli_inspect_offline_checkpoint",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "python -m drone_training evaluate-cql --checkpoint <temp>\\train-cql\\talon_cql_c3bf91662ac4f4f16e148b9b77f5e4c3\\checkpoint.pt --trusted-checkpoint-digest sha256:9fea755c72aee3950be6d7d6e25e49ccd976be5141451e7f7f8d7a6d23568ead --offline-dataset-digest sha256:3f33993c6d67c1b9080e2389940de7465867f3210b99eeff6115ed25a6e4a320 --source-dataset-digest sha256:4338d7b100d36ee7b59242268ec011fb695d297c386a3cb5fd02e110303de58b --family authorised_inspection --seed 0 --partition validation --timeout-seconds 60",
+          "duration_seconds": 6.641,
+          "exit_code": 0,
+          "name": "cli_evaluate_cql",
+          "passed": true
+        }
+      ],
+      "frozen_cql_evaluation": {
+        "checkpoint_digest": "sha256:9fea755c72aee3950be6d7d6e25e49ccd976be5141451e7f7f8d7a6d23568ead",
+        "classification": "dynamically_executed",
+        "family": "authorised_inspection",
+        "offline_dataset_digest": "sha256:3f33993c6d67c1b9080e2389940de7465867f3210b99eeff6115ed25a6e4a320",
+        "partition": "validation",
+        "passed": true,
+        "result": {
+          "strict_success": false
+        },
+        "seed": 0,
+        "source_dataset_digest": "sha256:4338d7b100d36ee7b59242268ec011fb695d297c386a3cb5fd02e110303de58b"
+      },
+      "missing_commands": [],
+      "passed": true
+    },
+    "td_backup_documentation": {
+      "checks": {
+        "contract_documented": true,
+        "mentions_masked_max_q": true,
+        "mentions_policy_gate": true,
+        "selection_vs_td_distinguished": true
+      },
+      "classification": "documentation_scan",
+      "passed": true
+    }
+  },
+  "environment_detail": {
+    "reason": "PLAYWRIGHT_BROWSERS_PATH is set; browser binaries resolved via a custom path without recording absolute private paths in the receipt",
+    "used_custom_playwright_browsers_path": true
+  },
+  "generated_at": "2026-07-19T16:32:45.624862+00:00",
+  "limitations": [
+    "Discrete CQL is a research baseline and is not certified for production safety.",
+    "The first encoder is GRU-based and learns from static private simulation trajectories only.",
+    "TD backup is mask-aware only; safety-threshold filtering applies at action selection and the policy gate remains authoritative.",
+    "Playwright --check-only uses listed_only counts; full evidence mode requires executed browser results.",
+    "Frontier scoring freeze is attested via unchanged training_ground/strict_verifier (git integrity).",
+    "Research baseline only: no production safety certification is claimed.",
+    "Resume/continued training from offline RL checkpoints is unsupported.",
+    "CLI --trusted-checkpoint-digest values are operator-supplied provenance, not immutable DB bindings.",
+    "No physical-response or external-effect capability is implemented; human approval remains mandatory where required."
+  ],
+  "passed": true,
+  "receipt_version": "talon.milestone-2-verification/1.0",
+  "schema_versions": {
+    "action_schema_version": "talon.action/3.0",
+    "cql_checkpoint_schema": "talon.offline-rl-checkpoint/2.0",
+    "environment_version": "talon.environment/2.0",
+    "feature_schema_version": "talon.features/3.0",
+    "offline_dataset_schema": "talon.private-offline-rl-dataset/1.0",
+    "receipt_version": "talon.milestone-2-verification/1.0",
+    "verifier_version": "talon.verifier/2.0"
+  },
+  "scope": {
+    "decision_support_only": true,
+    "external_effect": false,
+    "human_approval_mandatory": true,
+    "production_safety_certification": false,
+    "research_baseline": true,
+    "resume_training_unsupported": true,
+    "simulation_only": true
+  },
+  "source_commit": "049bc62c1dfb59eccd616125fadcb7d2d465cc56",
+  "test_counts": {
+    "complete_python": 549,
+    "dashboard_unit": 50,
+    "playwright_frontier": 12,
+    "playwright_talon": 12,
+    "playwright_total": 24,
+    "talon_python": 191
+  }
+}
