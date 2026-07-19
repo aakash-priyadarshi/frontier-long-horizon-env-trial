@@ -14,11 +14,13 @@ import argparse
 import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,15 @@ REQUIRED_RECEIPT_KEYS = frozenset(
         "limitations",
     }
 )
+REQUIRED_EVIDENCE_RECEIPT_KEYS = frozenset(
+    {
+        "branch",
+        "test_counts",
+        "schema_versions",
+        "scope",
+        "environment_detail",
+    }
+)
 REQUIRED_CHECK_KEYS = frozenset(
     {
         "dynamic_offline_rl",
@@ -54,8 +65,28 @@ REQUIRED_CHECK_KEYS = frozenset(
         "playwright",
         "product_hardenings",
         "bc_checkpoint_compatibility",
+        "suite_verification",
         "receipt_completeness",
     }
+)
+SUITE_VERIFICATION_COMMAND_NAMES = (
+    "talon_python",
+    "complete_python",
+    "dashboard_unit",
+    "dashboard_lint",
+    "dashboard_typecheck",
+    "dashboard_build",
+    "npm_audit",
+    "compileall",
+    "uv_lock",
+    "diff_check",
+    "cli_generate_dataset",
+    "cli_train_gru",
+    "cli_train_decision_transformer",
+    "cli_train_cql",
+    "cli_inspect_offline_dataset",
+    "cli_inspect_offline_checkpoint",
+    "cli_evaluate_cql",
 )
 REQUIRED_BC_ARCHITECTURES = frozenset({"gru", "decision_transformer"})
 REQUIRED_BC_PROBE_KEYS = frozenset(
@@ -104,6 +135,136 @@ PRODUCT_PATH_SCAN = (
     Path("src") / "drone_training" / "offline_evaluation.py",
     Path("src") / "drone_training" / "offline_policy_isolation.py",
 )
+_PRIVATE_PATH_RE = re.compile(
+    r"(?i)(?:[a-z]:\\users\\[^\\\"'\s]+|/users/[^/\"'\s]+|/home/[^/\"'\s]+)",
+)
+_TEMP_PATH_RE = re.compile(
+    r"(?i)(?:[a-z]:\\users\\[^\\]+\\appdata\\local\\temp\\[^\\\"'\s]+|"
+    r"/tmp/[^\\\"'\s]+|/var/folders/[^\\\"'\s]+|"
+    r"[a-z]:\\temp\\[^\\\"'\s]+)",
+)
+
+
+def _python_executable() -> str:
+    venv = ROOT / ".venv" / "Scripts" / "python.exe"
+    if venv.is_file():
+        return str(venv)
+    venv_unix = ROOT / ".venv" / "bin" / "python"
+    if venv_unix.is_file():
+        return str(venv_unix)
+    return sys.executable
+
+
+def _npm_executable() -> str:
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if npm is None:
+        raise RuntimeError("npm is required for Talon Milestone 2 verification")
+    return npm
+
+
+def _uv_executable() -> str | None:
+    return shutil.which("uv")
+
+
+def _sanitize_text(text: str, *, temp_root: Path | None = None) -> str:
+    sanitized = text
+    if temp_root is not None:
+        for candidate in {str(temp_root), str(temp_root.resolve())}:
+            sanitized = sanitized.replace(candidate, "<temp>")
+            sanitized = sanitized.replace(candidate.replace("\\", "/"), "<temp>")
+    for candidate in {str(ROOT), str(ROOT.resolve())}:
+        sanitized = sanitized.replace(candidate, ".")
+        sanitized = sanitized.replace(candidate.replace("\\", "/"), ".")
+    sanitized = _TEMP_PATH_RE.sub("<temp>", sanitized)
+    sanitized = _PRIVATE_PATH_RE.sub("<user-home>", sanitized)
+    return sanitized
+
+
+def _render_command(command: list[str], *, temp_root: Path | None = None) -> str:
+    executable = Path(command[0]).name
+    lower = executable.lower()
+    if lower.endswith(".exe") or lower.endswith(".cmd"):
+        executable = executable.rsplit(".", 1)[0]
+    if executable.lower().startswith("python"):
+        executable = "python"
+    rendered = subprocess.list2cmdline([executable, *command[1:]])
+    return _sanitize_text(rendered, temp_root=temp_root)
+
+
+def _test_count(output: str) -> int:
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    patterns = (
+        r"Tests\s+(\d+) passed",
+        r"(\d+)\s+passed\s+\(",
+        r"(\d+) passed",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _playwright_report(output: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(output, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and isinstance(value.get("stats"), dict):
+            return value
+    raise ValueError("Playwright JSON report was not produced")
+
+
+def _extract_json_object(output: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(output, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _run_command(
+    name: str,
+    command: list[str],
+    *,
+    cwd: Path = ROOT,
+    classification: str = "dynamically_executed",
+    temp_root: Path | None = None,
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    record: dict[str, Any] = {
+        "name": name,
+        "command": _render_command(command, temp_root=temp_root),
+        "exit_code": result.returncode,
+        "passed": result.returncode == 0,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "classification": classification,
+    }
+    count = _test_count(output)
+    if count or name in {"talon_python", "complete_python", "dashboard_unit"}:
+        record["test_count"] = count
+    record["_stdout"] = output
+    return record
 
 
 def _git(*arguments: str) -> str:
@@ -279,7 +440,7 @@ def _list_playwright_suite(spec: str | None) -> dict[str, Any]:
     if result.returncode != 0:
         raise RuntimeError(f"Playwright --list failed for {spec or 'e2e'}: {combined[-500:]}")
     count = _parse_playwright_list_count(combined)
-    display = " ".join(command)
+    display = _render_command(command)
     return {
         "count": count,
         "result": "listed_only",
@@ -288,12 +449,60 @@ def _list_playwright_suite(spec: str | None) -> dict[str, Any]:
     }
 
 
+def _run_playwright_suite(name: str, npm: str, *, spec: str | None = None) -> dict[str, Any]:
+    """Execute one Playwright suite with Chromium JSON reporting (evidence mode)."""
+
+    command = [
+        npm,
+        "run",
+        "test:e2e",
+        "--",
+        "--browser=chromium",
+        "--reporter=json",
+        "--workers=1",
+    ]
+    if spec is not None:
+        command.append(spec)
+    started = time.monotonic()
+    result = subprocess.run(
+        command,
+        cwd=ROOT / "apps" / "dashboard",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    try:
+        stats = _playwright_report(output)["stats"]
+        expected = int(stats.get("expected", 0))
+        unexpected = int(stats.get("unexpected", 0))
+        flaky = int(stats.get("flaky", 0))
+        skipped = int(stats.get("skipped", 0))
+        report_valid = True
+    except (TypeError, ValueError, KeyError):
+        expected = unexpected = flaky = skipped = 0
+        report_valid = False
+    count = expected + unexpected + flaky + skipped
+    passed = result.returncode == 0 and report_valid and skipped == 0
+    return {
+        "count": count,
+        "skipped": skipped,
+        "result": "dynamically_executed",
+        "command": _render_command(command),
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "exit_code": result.returncode,
+        "passed": passed,
+        "report_valid": report_valid,
+        "name": name,
+    }
+
+
 def _playwright_checks(*, list_only: bool) -> dict[str, Any]:
     """Populate Playwright receipt fields.
 
     ``--check-only`` prefers ``--list`` counts (``listed_only``) so dirty trees
-    stay fast and evidence is never written. Full evidence mode must use
-    executed results; this verifier still refuses dirty-tree evidence writes.
+    stay fast and evidence is never written. Full evidence mode executes Chromium
+    sequentially for talon, frontier, and complete suites.
     """
 
     note = (
@@ -301,17 +510,95 @@ def _playwright_checks(*, list_only: bool) -> dict[str, Any]:
         "and skipped=0; --check-only populates counts via playwright test --list."
     )
     if not list_only:
-        # Evidence generation path: still refuse to invent executed results here.
-        # Callers must not write evidence without a clean tree and real runs.
+        try:
+            npm = _npm_executable()
+            talon = _run_playwright_suite("talon", npm, spec="e2e/talon.spec.ts")
+            frontier = _run_playwright_suite(
+                "frontier", npm, spec="e2e/scripted-evaluation.spec.ts"
+            )
+            complete = _run_playwright_suite("complete", npm)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired, OSError) as exc:
+            return {
+                "passed": False,
+                "browser": "chromium",
+                "workers": 1,
+                "skipped": 0,
+                "result": "dynamically_executed",
+                "real_browser": True,
+                "note": note,
+                "error": _sanitize_text(str(exc)),
+                "classification": "dynamically_executed",
+            }
+
+        components = {"talon": talon, "frontier": frontier, "complete": complete}
+        missing = sorted(REQUIRED_PLAYWRIGHT_COMPONENTS - set(components))
+        skipped_total = max(int(components[key].get("skipped", 0)) for key in REQUIRED_PLAYWRIGHT_COMPONENTS)
+        counts_present = all(
+            isinstance(components[key].get("count"), int) for key in REQUIRED_PLAYWRIGHT_COMPONENTS
+        )
+        consistent = (
+            counts_present
+            and components["talon"]["count"] + components["frontier"]["count"]
+            == components["complete"]["count"]
+        )
+        all_passed = all(bool(components[key].get("passed")) for key in REQUIRED_PLAYWRIGHT_COMPONENTS)
+        report_valid = all(bool(components[key].get("report_valid")) for key in REQUIRED_PLAYWRIGHT_COMPONENTS)
+        exit_ok = all(int(components[key].get("exit_code", 1)) == 0 for key in REQUIRED_PLAYWRIGHT_COMPONENTS)
+        passed = (
+            not missing
+            and all_passed
+            and report_valid
+            and exit_ok
+            and skipped_total == 0
+            and consistent
+        )
         return {
-            "passed": False,
+            "passed": passed,
             "browser": "chromium",
             "workers": 1,
-            "skipped": 0,
-            "result": "executed_required",
+            "skipped": skipped_total,
+            "result": "dynamically_executed",
+            "real_browser": True,
             "note": note,
-            "classification": "playwright_schema",
-            "reason": "executed Playwright results are required for evidence mode",
+            "component_count_consistent": consistent,
+            "missing_components": missing,
+            "talon": {
+                key: talon[key]
+                for key in (
+                    "count",
+                    "skipped",
+                    "result",
+                    "command",
+                    "duration_seconds",
+                    "exit_code",
+                    "passed",
+                )
+            },
+            "frontier": {
+                key: frontier[key]
+                for key in (
+                    "count",
+                    "skipped",
+                    "result",
+                    "command",
+                    "duration_seconds",
+                    "exit_code",
+                    "passed",
+                )
+            },
+            "complete": {
+                key: complete[key]
+                for key in (
+                    "count",
+                    "skipped",
+                    "result",
+                    "command",
+                    "duration_seconds",
+                    "exit_code",
+                    "passed",
+                )
+            },
+            "classification": "dynamically_executed",
         }
 
     try:
@@ -370,6 +657,12 @@ def _validate_playwright_section(section: Any) -> list[str]:
         problems.append("playwright.workers must be 1")
     if section.get("skipped") not in (0,):
         problems.append("playwright.skipped must be 0")
+    executed = section.get("result") == "dynamically_executed"
+    if executed:
+        if section.get("real_browser") is not True:
+            problems.append("playwright.real_browser must be true")
+        if section.get("classification") != "dynamically_executed":
+            problems.append("playwright.classification must be dynamically_executed")
     for name in REQUIRED_PLAYWRIGHT_COMPONENTS:
         component = section.get(name)
         if not isinstance(component, dict):
@@ -382,6 +675,12 @@ def _validate_playwright_section(section: Any) -> list[str]:
             problems.append(f"playwright.{name}.count missing")
         if int(component.get("skipped", 0) or 0) != 0:
             problems.append(f"playwright.{name}.skipped nonzero")
+        if executed:
+            for field in ("duration_seconds", "exit_code", "passed"):
+                if field not in component:
+                    problems.append(f"playwright.{name}.{field} missing")
+            if component.get("result") != "dynamically_executed":
+                problems.append(f"playwright.{name}.result must be dynamically_executed")
     if all(isinstance(section.get(name), dict) and isinstance(section[name].get("count"), int) for name in REQUIRED_PLAYWRIGHT_COMPONENTS):
         talon_n = section["talon"]["count"]
         frontier_n = section["frontier"]["count"]
@@ -1330,6 +1629,380 @@ def _bc_checkpoint_compatibility() -> dict[str, Any]:
     }
 
 
+def _schema_versions() -> dict[str, Any]:
+    from drone_decision_ground.actions import ACTION_SCHEMA_VERSION
+    from drone_decision_ground.environment import ENVIRONMENT_VERSION
+    from drone_decision_verifier.scoring import VERIFIER_VERSION
+    from drone_training.features import FEATURE_SCHEMA_VERSION
+    from drone_training.offline_checkpoints import OFFLINE_CHECKPOINT_FORMAT_VERSION
+    from drone_training.offline_rl import OFFLINE_DATASET_SCHEMA_VERSION
+
+    return {
+        "receipt_version": "talon.milestone-2-verification/1.0",
+        "environment_version": ENVIRONMENT_VERSION,
+        "verifier_version": VERIFIER_VERSION,
+        "action_schema_version": ACTION_SCHEMA_VERSION,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "offline_dataset_schema": OFFLINE_DATASET_SCHEMA_VERSION,
+        "cql_checkpoint_schema": OFFLINE_CHECKPOINT_FORMAT_VERSION,
+    }
+
+
+def _environment_detail() -> dict[str, Any]:
+    custom = bool(os.environ.get("PLAYWRIGHT_BROWSERS_PATH"))
+    return {
+        "used_custom_playwright_browsers_path": custom,
+        "reason": (
+            "PLAYWRIGHT_BROWSERS_PATH is set; browser binaries resolved via a custom "
+            "path without recording absolute private paths in the receipt"
+            if custom
+            else "Playwright used its default browser install location; absolute private "
+            "paths are omitted from the receipt"
+        ),
+    }
+
+
+def _public_scope() -> dict[str, Any]:
+    return {
+        "simulation_only": True,
+        "decision_support_only": True,
+        "human_approval_mandatory": True,
+        "external_effect": False,
+        "research_baseline": True,
+        "production_safety_certification": False,
+        "resume_training_unsupported": True,
+    }
+
+
+def _strip_internal_fields(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if not key.startswith("_")}
+
+
+def _cli_smokes(python: str, temporary: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run generate/train/inspect/evaluate-cql CLI smokes under a temp directory."""
+
+    commands: list[dict[str, Any]] = []
+    dataset = temporary / "dataset.json"
+    train_gru_dir = temporary / "train-gru"
+    train_dt_dir = temporary / "train-dt"
+    train_cql_dir = temporary / "train-cql"
+    train_gru_dir.mkdir()
+    train_dt_dir.mkdir()
+    train_cql_dir.mkdir()
+
+    generate = _run_command(
+        "cli_generate_dataset",
+        [
+            python,
+            "-m",
+            "drone_training",
+            "generate-dataset",
+            "--output",
+            str(dataset),
+            "--partition",
+            "train",
+            "--seed-start",
+            "0",
+            "--seed-count",
+            "1",
+            "--family",
+            "authorised_inspection",
+            "--timeout-seconds",
+            "120",
+        ],
+        temp_root=temporary,
+        timeout=180,
+    )
+    commands.append(generate)
+
+    for name, subcommand, output_dir, extra in (
+        ("cli_train_gru", "train-gru", train_gru_dir, ["--epochs", "1", "--batch-size", "8", "--context-length", "4"]),
+        (
+            "cli_train_decision_transformer",
+            "train-decision-transformer",
+            train_dt_dir,
+            ["--epochs", "1", "--batch-size", "8", "--context-length", "4"],
+        ),
+        (
+            "cli_train_cql",
+            "train-cql",
+            train_cql_dir,
+            [
+                "--epochs",
+                "1",
+                "--batch-size",
+                "16",
+                "--context-length",
+                "4",
+                "--hidden-dim",
+                "8",
+                "--layers",
+                "1",
+                "--dropout",
+                "0",
+                "--target-update-interval",
+                "2",
+                "--timeout-seconds",
+                "300",
+            ],
+        ),
+    ):
+        commands.append(
+            _run_command(
+                name,
+                [
+                    python,
+                    "-m",
+                    "drone_training",
+                    subcommand,
+                    "--dataset",
+                    str(dataset),
+                    "--output-dir",
+                    str(output_dir),
+                    *extra,
+                ],
+                temp_root=temporary,
+                timeout=600,
+            )
+        )
+
+    cql_payload = _extract_json_object(commands[-1].get("_stdout") or "") or {}
+    run_id = str(cql_payload.get("training_run_id") or "")
+    cql_run = train_cql_dir / run_id if run_id else None
+    checkpoint = (cql_run / "checkpoint.pt") if cql_run is not None else temporary / "missing-checkpoint.pt"
+    offline_dataset = (cql_run / "offline_dataset.json") if cql_run is not None else temporary / "missing-offline.json"
+    checkpoint_digest = str(cql_payload.get("checkpoint_digest") or "")
+    offline_digest = str(cql_payload.get("offline_dataset_digest") or "")
+    source_digest = str(cql_payload.get("dataset_digest") or "")
+
+    inspect_dataset = _run_command(
+        "cli_inspect_offline_dataset",
+        [
+            python,
+            "-m",
+            "drone_training",
+            "inspect-offline-dataset",
+            "--dataset",
+            str(offline_dataset),
+        ],
+        temp_root=temporary,
+        timeout=120,
+    )
+    commands.append(inspect_dataset)
+    inspected_dataset = _extract_json_object(inspect_dataset.get("_stdout") or "") or {}
+    if inspected_dataset.get("dataset_digest"):
+        offline_digest = str(inspected_dataset["dataset_digest"])
+    if inspected_dataset.get("source_dataset_digest"):
+        source_digest = str(inspected_dataset["source_dataset_digest"])
+
+    inspect_checkpoint = _run_command(
+        "cli_inspect_offline_checkpoint",
+        [
+            python,
+            "-m",
+            "drone_training",
+            "inspect-offline-checkpoint",
+            "--checkpoint",
+            str(checkpoint),
+            "--trusted-checkpoint-digest",
+            checkpoint_digest or "sha256:" + ("0" * 64),
+            "--offline-dataset-digest",
+            offline_digest or "sha256:" + ("0" * 64),
+            "--source-dataset-digest",
+            source_digest or "sha256:" + ("0" * 64),
+        ],
+        temp_root=temporary,
+        timeout=120,
+    )
+    commands.append(inspect_checkpoint)
+    inspected_checkpoint = _extract_json_object(inspect_checkpoint.get("_stdout") or "") or {}
+    if inspected_checkpoint.get("checkpoint_digest"):
+        checkpoint_digest = str(inspected_checkpoint["checkpoint_digest"])
+    if inspected_checkpoint.get("offline_dataset_digest"):
+        offline_digest = str(inspected_checkpoint["offline_dataset_digest"])
+    if inspected_checkpoint.get("source_dataset_digest"):
+        source_digest = str(inspected_checkpoint["source_dataset_digest"])
+
+    evaluate = _run_command(
+        "cli_evaluate_cql",
+        [
+            python,
+            "-m",
+            "drone_training",
+            "evaluate-cql",
+            "--checkpoint",
+            str(checkpoint),
+            "--trusted-checkpoint-digest",
+            checkpoint_digest or "sha256:" + ("0" * 64),
+            "--offline-dataset-digest",
+            offline_digest or "sha256:" + ("0" * 64),
+            "--source-dataset-digest",
+            source_digest or "sha256:" + ("0" * 64),
+            "--family",
+            "authorised_inspection",
+            "--seed",
+            "0",
+            "--partition",
+            "validation",
+            "--timeout-seconds",
+            "60",
+        ],
+        temp_root=temporary,
+        timeout=180,
+    )
+    commands.append(evaluate)
+    evaluation_payload = _extract_json_object(evaluate.get("_stdout") or "") or {}
+    nested_result = evaluation_payload.get("result")
+    nested_result = nested_result if isinstance(nested_result, dict) else {}
+    frozen = {
+        "passed": bool(evaluate.get("passed")) and bool(evaluation_payload),
+        "classification": "dynamically_executed",
+        "partition": "validation",
+        "family": "authorised_inspection",
+        "seed": 0,
+        "checkpoint_digest": evaluation_payload.get("checkpoint_digest") or checkpoint_digest,
+        "offline_dataset_digest": offline_digest,
+        "source_dataset_digest": source_digest,
+        "result": {
+            key: nested_result[key]
+            for key in ("strict_success", "gate_accepted", "recommended_action", "outcome")
+            if key in nested_result
+        }
+        or {
+            key: evaluation_payload[key]
+            for key in (
+                "schema_version",
+                "evaluation_id",
+                "algorithm",
+                "environment_version",
+                "verifier_version",
+                "elapsed_ms",
+            )
+            if key in evaluation_payload
+        },
+    }
+    return commands, frozen
+
+
+def _suite_verification(*, deferred: bool) -> dict[str, Any]:
+    """Run full suite verification in evidence mode, or defer under --check-only."""
+
+    if deferred:
+        return {
+            "passed": True,
+            "classification": "deferred_to_evidence_mode",
+            "note": (
+                "Suite verification (pytest, dashboard npm scripts, compileall, "
+                "uv lock, git diff --check, and CLI smokes) is deferred to evidence mode"
+            ),
+        }
+
+    python = _python_executable()
+    npm = _npm_executable()
+    uv = _uv_executable()
+    dashboard = ROOT / "apps" / "dashboard"
+    commands: list[dict[str, Any]] = []
+
+    pytest_prefix: list[str]
+    if uv is not None:
+        pytest_prefix = [uv, "run", "--extra", "talon", "--extra", "test", "python", "-m", "pytest"]
+    else:
+        pytest_prefix = [python, "-m", "pytest"]
+
+    commands.append(
+        _run_command("talon_python", [*pytest_prefix, "tests/talon", "-q"], timeout=1800)
+    )
+    commands.append(
+        _run_command("complete_python", [*pytest_prefix, "tests", "-q"], timeout=3600)
+    )
+    commands.append(
+        _run_command("dashboard_unit", [npm, "test", "--", "--run"], cwd=dashboard, timeout=900)
+    )
+    commands.append(
+        _run_command(
+            "dashboard_lint",
+            [npm, "run", "lint"],
+            cwd=dashboard,
+            classification="static",
+            timeout=600,
+        )
+    )
+    commands.append(
+        _run_command(
+            "dashboard_typecheck",
+            [npm, "run", "typecheck"],
+            cwd=dashboard,
+            classification="static",
+            timeout=600,
+        )
+    )
+    commands.append(
+        _run_command("dashboard_build", [npm, "run", "build"], cwd=dashboard, timeout=900)
+    )
+    commands.append(
+        _run_command(
+            "npm_audit",
+            [npm, "audit", "--audit-level=high"],
+            cwd=dashboard,
+            classification="dependency_scan",
+            timeout=300,
+        )
+    )
+    commands.append(
+        _run_command(
+            "compileall",
+            [python, "-m", "compileall", "-q", "src", "scripts", "tests"],
+            classification="static",
+            timeout=300,
+        )
+    )
+    if uv is not None:
+        commands.append(
+            _run_command(
+                "uv_lock",
+                [uv, "lock", "--check"],
+                classification="dependency_scan",
+                timeout=120,
+            )
+        )
+    else:
+        commands.append(
+            {
+                "name": "uv_lock",
+                "command": "uv lock --check",
+                "exit_code": 1,
+                "passed": False,
+                "duration_seconds": 0.0,
+                "classification": "dependency_scan",
+                "error": "uv executable not found",
+            }
+        )
+    commands.append(
+        _run_command(
+            "diff_check",
+            ["git", "diff", "--check"],
+            classification="static",
+            timeout=60,
+        )
+    )
+
+    with tempfile.TemporaryDirectory(prefix="talon-m2-suite-") as temporary:
+        cli_commands, frozen = _cli_smokes(python, Path(temporary))
+        commands.extend(cli_commands)
+
+    public_commands = [_strip_internal_fields(item) for item in commands]
+    by_name = {item["name"]: item for item in public_commands}
+    missing = [name for name in SUITE_VERIFICATION_COMMAND_NAMES if name not in by_name]
+    passed = not missing and all(bool(item.get("passed")) for item in public_commands) and bool(frozen.get("passed"))
+    return {
+        "passed": passed,
+        "classification": "dynamically_executed",
+        "commands": public_commands,
+        "missing_commands": missing,
+        "frozen_cql_evaluation": frozen,
+    }
+
+
 def _receipt_completeness(report: dict[str, Any]) -> dict[str, Any]:
     missing_top = sorted(REQUIRED_RECEIPT_KEYS - set(report))
     checks_block = report.get("checks") if isinstance(report.get("checks"), dict) else {}
@@ -1400,6 +2073,86 @@ def _receipt_completeness(report: dict[str, Any]) -> dict[str, Any]:
         if arch.get("passed") is not True:
             bc_problems.append(f"bc_checkpoint_compatibility.{architecture}.passed must be true")
 
+    suite = (
+        checks_block.get("suite_verification") if isinstance(checks_block.get("suite_verification"), dict) else {}
+    )
+    suite_problems: list[str] = []
+    evidence_top_problems: list[str] = []
+    if suite.get("classification") == "dynamically_executed":
+        if suite.get("passed") is not True:
+            suite_problems.append("suite_verification.passed must be true in evidence mode")
+        commands = suite.get("commands")
+        if not isinstance(commands, list):
+            suite_problems.append("suite_verification.commands missing")
+        else:
+            names = {item.get("name") for item in commands if isinstance(item, dict)}
+            missing_suite = [name for name in SUITE_VERIFICATION_COMMAND_NAMES if name not in names]
+            if missing_suite:
+                suite_problems.append(f"suite_verification missing commands: {missing_suite}")
+        frozen = suite.get("frozen_cql_evaluation")
+        if not isinstance(frozen, dict) or frozen.get("passed") is not True:
+            suite_problems.append("suite_verification.frozen_cql_evaluation.passed must be true")
+        missing_evidence_top = sorted(REQUIRED_EVIDENCE_RECEIPT_KEYS - set(report))
+        if missing_evidence_top:
+            evidence_top_problems.append(f"missing evidence top-level keys: {missing_evidence_top}")
+        playwright = checks_block.get("playwright") if isinstance(checks_block.get("playwright"), dict) else {}
+        if playwright.get("result") != "dynamically_executed":
+            evidence_top_problems.append("playwright.result must be dynamically_executed in evidence mode")
+        if playwright.get("real_browser") is not True:
+            evidence_top_problems.append("playwright.real_browser must be true in evidence mode")
+        test_counts = report.get("test_counts")
+        if not isinstance(test_counts, dict):
+            evidence_top_problems.append("test_counts missing")
+        else:
+            for key in (
+                "talon_python",
+                "complete_python",
+                "dashboard_unit",
+                "playwright_talon",
+                "playwright_frontier",
+                "playwright_total",
+            ):
+                if key not in test_counts:
+                    evidence_top_problems.append(f"test_counts.{key} missing")
+        schema = report.get("schema_versions")
+        if not isinstance(schema, dict):
+            evidence_top_problems.append("schema_versions missing")
+        else:
+            for key in (
+                "receipt_version",
+                "environment_version",
+                "verifier_version",
+                "action_schema_version",
+                "feature_schema_version",
+                "offline_dataset_schema",
+                "cql_checkpoint_schema",
+            ):
+                if key not in schema:
+                    evidence_top_problems.append(f"schema_versions.{key} missing")
+        scope = report.get("scope")
+        if not isinstance(scope, dict):
+            evidence_top_problems.append("scope missing")
+        else:
+            for key, expected in (
+                ("simulation_only", True),
+                ("decision_support_only", True),
+                ("human_approval_mandatory", True),
+                ("external_effect", False),
+                ("research_baseline", True),
+                ("production_safety_certification", False),
+                ("resume_training_unsupported", True),
+            ):
+                if scope.get(key) is not expected:
+                    evidence_top_problems.append(f"scope.{key} must be {expected!r}")
+        detail = report.get("environment_detail")
+        if not isinstance(detail, dict) or "used_custom_playwright_browsers_path" not in detail:
+            evidence_top_problems.append("environment_detail.used_custom_playwright_browsers_path missing")
+    elif suite.get("classification") == "deferred_to_evidence_mode":
+        if suite.get("passed") is not True:
+            suite_problems.append("deferred suite_verification.passed must be true")
+    else:
+        suite_problems.append("suite_verification.classification must be dynamically_executed or deferred_to_evidence_mode")
+
     return {
         "passed": (
             not missing_top
@@ -1411,6 +2164,8 @@ def _receipt_completeness(report: dict[str, Any]) -> dict[str, Any]:
             and not missing_hardenings
             and not hardening_classification_problems
             and not bc_problems
+            and not suite_problems
+            and not evidence_top_problems
         ),
         "missing_top_level_keys": missing_top,
         "missing_check_keys": missing_checks,
@@ -1418,6 +2173,8 @@ def _receipt_completeness(report: dict[str, Any]) -> dict[str, Any]:
         "missing_product_hardening_keys": missing_hardenings,
         "product_hardening_classification_problems": hardening_classification_problems,
         "bc_checkpoint_compatibility_problems": bc_problems,
+        "suite_verification_problems": suite_problems,
+        "evidence_top_level_problems": evidence_top_problems,
         "playwright_schema_problems": playwright_problems,
         "frontier_integrity_method_ok": frontier_ok,
         "classification": "receipt_schema",
@@ -1432,6 +2189,7 @@ def build_report(source_commit: str, *, list_only_playwright: bool = True) -> di
     playwright = _playwright_checks(list_only=list_only_playwright)
     hardenings = _product_hardenings()
     bc_compat = _bc_checkpoint_compatibility()
+    suite = _suite_verification(deferred=list_only_playwright)
     m1 = frontier.get("milestone_1_receipt") or _m1_receipt_blob_identity(source_commit)
     checks: dict[str, Any] = {
         "dynamic_offline_rl": dynamic,
@@ -1442,21 +2200,45 @@ def build_report(source_commit: str, *, list_only_playwright: bool = True) -> di
         "playwright": playwright,
         "product_hardenings": hardenings,
         "bc_checkpoint_compatibility": bc_compat,
+        "suite_verification": suite,
     }
-    report = {
+    limitations = [
+        "Discrete CQL is a research baseline and is not certified for production safety.",
+        "The first encoder is GRU-based and learns from static private simulation trajectories only.",
+        "TD backup is mask-aware only; safety-threshold filtering applies at action selection and the policy gate remains authoritative.",
+        "Playwright --check-only uses listed_only counts; full evidence mode requires executed browser results.",
+        "Frontier scoring freeze is attested via unchanged training_ground/strict_verifier (git integrity).",
+        "Research baseline only: no production safety certification is claimed.",
+        "Resume/continued training from offline RL checkpoints is unsupported.",
+        "CLI --trusted-checkpoint-digest values are operator-supplied provenance, not immutable DB bindings.",
+        "No physical-response or external-effect capability is implemented; human approval remains mandatory where required.",
+    ]
+    report: dict[str, Any] = {
         "receipt_version": "talon.milestone-2-verification/1.0",
         "source_commit": source_commit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "passed": all(item["passed"] for item in checks.values()),
         "checks": checks,
-        "limitations": [
-            "Discrete CQL is a research baseline and is not certified for production safety.",
-            "The first encoder is GRU-based and learns from static private simulation trajectories only.",
-            "TD backup is mask-aware only; safety-threshold filtering applies at action selection and the policy gate remains authoritative.",
-            "Playwright --check-only uses listed_only counts; full evidence mode requires executed browser results.",
-            "Frontier scoring freeze is attested via unchanged training_ground/strict_verifier (git integrity).",
-        ],
+        "limitations": limitations,
     }
+    if not list_only_playwright:
+        suite_commands = {
+            item["name"]: item
+            for item in (suite.get("commands") or [])
+            if isinstance(item, dict) and "name" in item
+        }
+        report["branch"] = _git("rev-parse", "--abbrev-ref", "HEAD")
+        report["test_counts"] = {
+            "talon_python": int((suite_commands.get("talon_python") or {}).get("test_count") or 0),
+            "complete_python": int((suite_commands.get("complete_python") or {}).get("test_count") or 0),
+            "dashboard_unit": int((suite_commands.get("dashboard_unit") or {}).get("test_count") or 0),
+            "playwright_talon": int((playwright.get("talon") or {}).get("count") or 0),
+            "playwright_frontier": int((playwright.get("frontier") or {}).get("count") or 0),
+            "playwright_total": int((playwright.get("complete") or {}).get("count") or 0),
+        }
+        report["schema_versions"] = _schema_versions()
+        report["scope"] = _public_scope()
+        report["environment_detail"] = _environment_detail()
     # Seed before validation so REQUIRED_CHECK_KEYS (incl. self) can pass.
     report["checks"]["receipt_completeness"] = {
         "passed": False,
@@ -1466,6 +2248,8 @@ def build_report(source_commit: str, *, list_only_playwright: bool = True) -> di
         "missing_product_hardening_keys": [],
         "product_hardening_classification_problems": [],
         "bc_checkpoint_compatibility_problems": [],
+        "suite_verification_problems": [],
+        "evidence_top_level_problems": [],
         "playwright_schema_problems": [],
         "classification": "receipt_schema",
     }
@@ -1486,7 +2270,7 @@ def main(argv: list[str] | None = None) -> int:
         refuse_dirty_evidence(_git("status", "--short"))
         validate_source_commit(ROOT, source_commit, ALLOWED_RECEIPTS)
     # --check-only: list Playwright tests only (no evidence write, dirty tree OK).
-    # Evidence mode requires executed results (not invented here) and a clean tree.
+    # Evidence mode executes Playwright + suite verification and requires a clean tree.
     report = build_report(source_commit, list_only_playwright=bool(args.check_only))
     if args.check_only:
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -60,6 +60,7 @@ def test_receipt_completeness_requires_new_check_keys() -> None:
     assert "frontier_integrity" in result["missing_check_keys"]
     assert "product_hardenings" in result["missing_check_keys"]
     assert "bc_checkpoint_compatibility" in result["missing_check_keys"]
+    assert "suite_verification" in result["missing_check_keys"]
 
 
 def _valid_bc_architecture_block() -> dict:
@@ -83,6 +84,14 @@ def _valid_bc_checkpoint_compatibility_block() -> dict:
         "missing_architectures": [],
         "gru": _valid_bc_architecture_block(),
         "decision_transformer": _valid_bc_architecture_block(),
+    }
+
+
+def _deferred_suite_verification_block() -> dict:
+    return {
+        "passed": True,
+        "classification": "deferred_to_evidence_mode",
+        "note": "Suite verification deferred to evidence mode",
     }
 
 
@@ -135,6 +144,7 @@ def test_receipt_completeness_rejects_missing_dynamic_proof_keys() -> None:
                 },
             },
             "bc_checkpoint_compatibility": _valid_bc_checkpoint_compatibility_block(),
+            "suite_verification": _deferred_suite_verification_block(),
             "receipt_completeness": {"passed": True},
         },
         "limitations": [],
@@ -200,6 +210,7 @@ def _base_checks_for_receipt() -> dict:
         },
         "product_hardenings": _valid_product_hardenings_block(),
         "bc_checkpoint_compatibility": _valid_bc_checkpoint_compatibility_block(),
+        "suite_verification": _deferred_suite_verification_block(),
         "receipt_completeness": {"passed": True},
     }
 
@@ -447,3 +458,59 @@ def test_frontier_integrity_records_git_blob_method(monkeypatch: pytest.MonkeyPa
     assert result["integrity_method"] == "git_blob_identity"
     assert result["frontier_scoring_freeze"]["passed"] is True
     assert "src/training_ground" in result["frontier_scoring_freeze"]["paths"]
+
+
+def test_playwright_checks_evidence_mode_builds_executed_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_suite(name: str, npm: str, *, spec: str | None = None) -> dict:
+        counts = {
+            "e2e/talon.spec.ts": 10,
+            "e2e/scripted-evaluation.spec.ts": 12,
+            None: 22,
+        }
+        count = counts[spec]
+        return {
+            "count": count,
+            "skipped": 0,
+            "result": "dynamically_executed",
+            "command": f"npm run test:e2e -- --browser=chromium --reporter=json --workers=1 {spec or ''}".strip(),
+            "duration_seconds": 1.5,
+            "exit_code": 0,
+            "passed": True,
+            "report_valid": True,
+            "name": name,
+        }
+
+    monkeypatch.setattr(verifier, "_npm_executable", lambda: "npm")
+    monkeypatch.setattr(verifier, "_run_playwright_suite", fake_suite)
+    result = verifier._playwright_checks(list_only=False)
+    assert result["result"] == "dynamically_executed"
+    assert result["result"] != "executed_required"
+    assert result["classification"] == "dynamically_executed"
+    assert result["real_browser"] is True
+    assert result["browser"] == "chromium"
+    assert result["workers"] == 1
+    assert result["skipped"] == 0
+    assert result["passed"] is True
+    assert result["talon"]["count"] == 10
+    assert result["frontier"]["count"] == 12
+    assert result["complete"]["count"] == 22
+    assert result["talon"]["result"] == "dynamically_executed"
+    assert "exit_code" in result["talon"]
+    assert "duration_seconds" in result["complete"]
+
+
+def test_suite_verification_check_only_is_deferred() -> None:
+    result = verifier._suite_verification(deferred=True)
+    assert result["passed"] is True
+    assert result["classification"] == "deferred_to_evidence_mode"
+    assert "note" in result
+
+
+def test_sanitize_text_redacts_private_paths() -> None:
+    raw = r"C:\Users\aakas\AppData\Local\Temp\abc\dataset.json and /Users/someone/project"
+    sanitized = verifier._sanitize_text(raw)
+    assert "aakas" not in sanitized
+    assert "someone" not in sanitized
+    assert "Users" not in sanitized or "<user-home>" in sanitized or "<temp>" in sanitized
