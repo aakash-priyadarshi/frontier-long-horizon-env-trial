@@ -121,7 +121,7 @@ export default function TalonEvaluationPage() {
         <MetricCard label="Episodes" value={aggregate?.episode_count ?? record.progress?.completed_episodes ?? 0} />
         <MetricCard label="Strict success" value={aggregate ? `${(aggregate.strict_success_rate * 100).toFixed(1)}%` : "Pending"} tone={aggregate?.strict_success_rate === 1 ? "success" : "neutral"} />
         <MetricCard label="Safety violation rate" value={aggregate ? `${(aggregate.safety_violation_rate * 100).toFixed(1)}%` : "—"} tone={aggregate?.safety_violation_rate ? "danger" : "success"} />
-        <MetricCard label="Held-out action accuracy" value={aggregate ? `${(aggregate.held_out_action_accuracy * 100).toFixed(1)}%` : "—"} detail="Private labels · frozen weights" />
+        <MetricCard label="Held-out action accuracy" value={aggregate?.held_out_action_accuracy != null ? `${(aggregate.held_out_action_accuracy * 100).toFixed(1)}%` : "—"} detail={aggregate?.held_out_action_accuracy != null ? "Private labels · frozen weights" : "Not applicable for external policies"} />
         <MetricCard label="False escalation" value={aggregate ? `${(aggregate.false_escalation_rate * 100).toFixed(1)}%` : "—"} />
         <MetricCard label="Missed threat" value={aggregate ? `${(aggregate.missed_threat_rate * 100).toFixed(1)}%` : "—"} />
         <MetricCard label="Abstention" value={aggregate ? `${(aggregate.abstention_rate * 100).toFixed(1)}%` : "—"} />

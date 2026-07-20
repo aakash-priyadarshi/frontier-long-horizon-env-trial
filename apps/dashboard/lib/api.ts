@@ -14,7 +14,15 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const body = response.status === 204 ? undefined : await response.json();
   if (!response.ok) {
-    throw new APIRequestError(body?.error?.code ?? "request_failed", body?.error?.message ?? "Request failed", response.status);
+    const detail = body?.error ?? body?.detail;
+    const code = typeof detail === "object" && detail && "code" in detail ? String(detail.code) : "request_failed";
+    const message =
+      typeof detail === "object" && detail && "message" in detail
+        ? String(detail.message)
+        : typeof detail === "string"
+          ? detail
+          : "Request failed";
+    throw new APIRequestError(code, message, response.status);
   }
   return body as T;
 }

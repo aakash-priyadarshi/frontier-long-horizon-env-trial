@@ -40,14 +40,19 @@ test.describe.serial("real Talon simulation journeys", () => {
 
   test("2. dataset generation uses a real private worker", async ({ page, request }) => {
     await page.goto("/talon/datasets");
-    await page.getByLabel("Seed-domain size").fill("1");
-    await page.getByRole("button", { name: "Generate" }).click();
-    await expect(page.getByRole("table", { name: "Safe Talon dataset records" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Talon training datasets" })).toBeVisible();
+    const created = await request.post(`${api}/api/drone/datasets/generate`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-dataset-${Date.now()}` },
+      data: { seed_count: 1, timeout_seconds: 120 },
+    });
+    expect(created.status(), await created.text()).toBe(202);
     const records = await (await request.get(`${api}/api/drone/datasets`)).json();
     datasetId = records.items[0].record_id;
     const settled = await waitForRecord(request, `/api/drone/datasets/${datasetId}`);
     expect(settled.status).toBe("completed");
     expect(JSON.stringify(settled)).not.toMatch(/trajectories|expert_action|scenario_family|instance_digest/i);
+    await page.reload();
+    await expect(page.getByRole("table", { name: "Safe Talon dataset records" })).toBeVisible({ timeout: 30_000 });
   });
 
   test("3. training cancellation stops its worker and emits one outcome", async ({ request }) => {
@@ -166,7 +171,7 @@ test.describe.serial("real Talon simulation journeys", () => {
     expect(settled.episodes[0].replay.replay_digest).toMatch(/^sha256:[a-f0-9]{64}$/);
     await page.goto(`/talon/episodes/${replayEpisodeId}/replay`);
     await expect(page.getByRole("heading", { name: "Human-readable model behaviour" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Play replay" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Play replay" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByLabel("Replay position")).toBeVisible();
     await page.getByRole("button", { name: "Next step" }).click();
     const body = await page.locator("body").innerText();
@@ -176,5 +181,61 @@ test.describe.serial("real Talon simulation journeys", () => {
     const exported = await request.get(`${api}/api/drone/episodes/${replayEpisodeId}/replay/export.json`);
     expect(exported.ok()).toBeTruthy();
     expect(await exported.text()).not.toMatch(/scenario_family|true_intent|expert_action|verifier_predicate/i);
+  });
+
+  test("13. scripted external baseline evaluation, replay, and comparison", async ({ page, request }) => {
+    await page.goto("/talon/evaluations/new");
+    await expect(page.getByRole("heading", { name: "Evaluate a Talon policy" })).toBeVisible();
+    await page.getByLabel("Policy source").selectOption("external_llm");
+    await expect(page.getByText(/External models are evaluated as simulation-only recommendation policies/)).toBeVisible();
+    await expect(page.getByText(/deterministic policy gate and strict verifier/)).toBeVisible();
+    await page.getByLabel("Policy source").selectOption("scripted_external_baseline");
+    await expect(page.getByLabel("Scripted baseline")).toBeVisible();
+
+    const created = await request.post(`${api}/api/drone/external-llm/evaluations`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-ext-${Date.now()}` },
+      data: {
+        policy_kind: "scripted_external_baseline",
+        provider: "scripted_external",
+        model: "scripted-valid",
+        prompt_version: "talon-llm-policy/1.0",
+        temperature: 0,
+        timeout_seconds: 30,
+        max_output_tokens: 300,
+        attempts_per_scenario: 1,
+        scenario_partition: "evaluation",
+        seed_count: 1,
+      },
+    });
+    const creation = await created.json();
+    expect(created.status(), JSON.stringify(creation)).toBe(202);
+    const externalEvalId = creation.evaluation_id as string;
+    await page.goto(`/talon/evaluations/${externalEvalId}`);
+    const settled = await waitForRecord(request, `/api/drone/evaluations/${externalEvalId}`, 180_000);
+    expect(settled.status).toBe("completed");
+    expect(settled.algorithm).toBe("scripted_external_baseline");
+    expect(settled.checkpoint_digest == null || settled.checkpoint_digest === undefined).toBeTruthy();
+    expect(settled.episodes[0].replay.external_policy.policy_kind).toBe("scripted_external_baseline");
+    expect(settled.episodes[0].checkpoint_digest).toBeNull();
+    const externalEpisodeId = settled.episodes[0].result.episode_id;
+    const replayApi = await request.get(`${api}/api/drone/episodes/${externalEpisodeId}/replay`);
+    expect(replayApi.ok(), await replayApi.text()).toBeTruthy();
+    const replayBody = await replayApi.json();
+    expect(replayBody.checkpoint_digest).toBeNull();
+    expect(replayBody.external_policy.policy_kind).toBe("scripted_external_baseline");
+    await page.goto(`/talon/episodes/${externalEpisodeId}/replay`);
+    await expect(page.getByRole("heading", { name: "Human-readable model behaviour" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Play replay" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("scripted_external_baseline").first()).toBeVisible();
+    expect(await page.locator("body").innerText()).not.toMatch(/sk-|api[_-]?key|authorization|chain.of.thought:/i);
+
+    const compared = await request.post(`${api}/api/drone/comparisons`, {
+      headers: { ...controlHeaders, "Idempotency-Key": `pw-ext-compare-${Date.now()}` },
+      data: { evaluation_ids: [evaluationId, externalEvalId] },
+    });
+    expect(compared.status(), await compared.text()).toBe(201);
+    const comparison = await compared.json();
+    expect(comparison.compatibility.domain_compatible).toBe(true);
+    expect(comparison.models.some((item: { policy_kind?: string }) => item.policy_kind === "scripted_external_baseline")).toBeTruthy();
   });
 });

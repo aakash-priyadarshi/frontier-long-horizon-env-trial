@@ -358,7 +358,13 @@ export type TalonRecord = {
   dataset_digest?: string;
   trajectory_count?: number;
   architecture?: "gru" | "decision_transformer" | "cql_gru";
-  algorithm?: "behaviour_cloning" | "discrete_cql";
+  algorithm?: "behaviour_cloning" | "discrete_cql" | "external_llm" | "scripted_external_baseline" | string;
+  policy_kind?: "external_llm" | "scripted_external_baseline" | string;
+  provider?: string;
+  model?: string;
+  prompt_version?: string;
+  provider_adapter_version?: string;
+  evaluation_config_digest?: string;
   algorithm_version?: string;
   offline_dataset_digest?: string;
   transition_count?: number;
@@ -398,7 +404,10 @@ export type TalonRecord = {
     false_escalation_rate: number;
     missed_threat_rate: number;
     expected_calibration_error: number;
-    held_out_action_accuracy: number;
+    held_out_action_accuracy?: number;
+    average_provider_latency_ms?: number;
+    provider_failure_rate?: number;
+    schema_failure_rate?: number;
     gate_intervention_rate?: number;
     invalid_action_rate?: number;
     worst_case_score?: number;
@@ -442,7 +451,16 @@ export type TalonRecord = {
 export type TalonEpisode = {
   schema_version: string;
   evaluation_id: string;
-  checkpoint_digest: string;
+  checkpoint_digest?: string | null;
+  policy_kind?: string;
+  external_policy?: {
+    policy_kind: string;
+    provider: string;
+    model: string;
+    prompt_version: string;
+    provider_adapter_version: string;
+    evaluation_config_digest: string;
+  };
   environment_version: string;
   verifier_version: string;
   result: {
@@ -523,7 +541,15 @@ export type TalonReplay = {
   replay_digest: string;
   evaluation_id: string;
   episode_id: string;
-  checkpoint_digest: string;
+  checkpoint_digest?: string | null;
+  external_policy?: {
+    policy_kind: string;
+    provider: string;
+    model: string;
+    prompt_version: string;
+    provider_adapter_version: string;
+    evaluation_config_digest: string;
+  };
   environment_version: string;
   verifier_version: string;
   terminal: true;

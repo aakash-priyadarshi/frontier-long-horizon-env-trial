@@ -18,7 +18,9 @@ from drone_decision_verifier.leak_detection import assert_public_safe
 from .manifests import canonical_json, content_digest, write_immutable_json
 
 
-TALON_STORE_SCHEMA_VERSION = 2
+# Additive: v3 records may carry external_llm / scripted_external_baseline
+# configuration and provenance fields inside existing JSON payloads.
+TALON_STORE_SCHEMA_VERSION = 3
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted", "timed_out"})
 ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 

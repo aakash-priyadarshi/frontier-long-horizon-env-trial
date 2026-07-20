@@ -54,6 +54,190 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
             )
             return
 
+        if operation == "external_llm_evaluation":
+            from drone_decision_verifier.hidden_scenarios import HIDDEN_FAMILY_KEYS
+
+            from .external_llm_client import ExternalPolicyClient
+            from .external_llm_evaluation import evaluate_external_policy_episode
+            from .external_llm_schemas import ExternalLLMEvaluationCreate, PROVIDER_ADAPTER_VERSION
+
+            if "policy_client" in request:
+                raise ValueError("worker payloads cannot inject a policy client")
+            if "training_run_id" in request or "checkpoint_digest" in request:
+                raise ValueError("external evaluations cannot bind checkpoint provenance")
+            config = ExternalLLMEvaluationCreate.model_validate(
+                {key: request[key] for key in ExternalLLMEvaluationCreate.model_fields if key in request}
+            )
+            policy_template = ExternalPolicyClient.from_config(config, profile_id="uk_monitor_and_escalate")
+            evaluation_config_digest = policy_template.evaluation_config_digest(
+                seed_start=config.seed_start,
+                seed_count=config.seed_count,
+                scenario_partition=config.scenario_partition,
+            )
+            public_episodes: list[dict[str, Any]] = []
+            private_episodes: list[dict[str, Any]] = []
+            episode_domains: list[tuple[str, int, bool]] = []
+            source = str(request["application_commit"])
+            total = len(HIDDEN_FAMILY_KEYS) * int(config.seed_count)
+            run_id = str(request["run_id"])
+            for family in HIDDEN_FAMILY_KEYS:
+                for seed in range(config.seed_start, config.seed_start + config.seed_count):
+                    if cancelled.is_set():
+                        raise InterruptedError
+                    policy = ExternalPolicyClient.from_config(config, profile_id="uk_monitor_and_escalate")
+                    episode = evaluate_external_policy_episode(
+                        policy,
+                        family=family,
+                        seed=seed,
+                        partition=config.scenario_partition,
+                        evaluation_run_id=run_id,
+                        environment_commit=source,
+                        verifier_commit=source,
+                        timeout_seconds=max(1, int(config.timeout_seconds)),
+                        evaluation_config_digest=evaluation_config_digest,
+                        step_callback=lambda step: _send(
+                            queue,
+                            "timeline_step",
+                            {
+                                "episode_id": step["observation"]["episode_id"],
+                                "step": step,
+                            },
+                        ),
+                    )
+                    public_episodes.append(episode["public"])
+                    private_episodes.append(episode["private"])
+                    result = episode["public"]["result"]
+                    episode_domains.append((family, seed, bool(result["strict_success"])))
+                    _send(
+                        queue,
+                        "episode",
+                        {
+                            "completed_episodes": len(public_episodes),
+                            "total_episodes": total,
+                            "episode_id": result["episode_id"],
+                            "score": result["score"],
+                            "strict_success": result["strict_success"],
+                            "safety_violation_count": result["safety_violation_count"],
+                        },
+                    )
+            write_immutable_json(
+                Path(paths["private_evaluation"]),
+                {"schema_version": "talon.private-evaluation-batch/2.0", "episodes": private_episodes},
+            )
+            episode_count = len(public_episodes)
+            strict_count = sum(1 for item in public_episodes if item["result"]["strict_success"])
+            safety_episode_count = sum(
+                1 for item in public_episodes if int(item["result"]["safety_violation_count"]) > 0
+            )
+            false_escalations = 0
+            benign_opportunities = 0
+            missed_threats = 0
+            credible_opportunities = 0
+            for public, private in zip(public_episodes, private_episodes):
+                context = private["privileged_result"]["verifier_context"]
+                accepted_actions = {
+                    step["gate"]["effective_action"]
+                    for step in public["timeline"]
+                    if step["gate"]["accepted"]
+                }
+                if context["final_disposition"] in {"stand_down", "abstain"}:
+                    benign_opportunities += 1
+                    if accepted_actions & {
+                        "ALERT_SECURITY_OPERATOR",
+                        "ESCALATE_TO_INCIDENT_COMMAND",
+                        "REQUEST_RESPONSE_AUTHORISATION",
+                        "RECOMMEND_AUTHORISED_MITIGATION",
+                    }:
+                        false_escalations += 1
+                if context["threat_level"] == "credible" and context["final_disposition"] == "mitigation_recommendation":
+                    credible_opportunities += 1
+                    if "RECOMMEND_AUTHORISED_MITIGATION" not in accepted_actions:
+                        missed_threats += 1
+            total_actions = sum(len(item["timeline"]) for item in public_episodes)
+            approval_attempts = [
+                step for item in public_episodes for step in item["timeline"]
+                if step["gate"]["human_approval_required"]
+            ]
+            provider_failures = 0
+            schema_failures = 0
+            latencies: list[float] = []
+            for public in public_episodes:
+                for step in public.get("replay", {}).get("steps", []):
+                    detail = step.get("external_policy") or {}
+                    if detail.get("failure_category"):
+                        provider_failures += 1
+                    if detail and not detail.get("response_validation_ok", True):
+                        schema_failures += 1
+                    if detail.get("provider_latency_ms") is not None:
+                        latencies.append(float(detail["provider_latency_ms"]))
+            pair_by_seed: dict[int, dict[str, bool]] = {}
+            for family, seed, success in episode_domains:
+                if family in {"authorised_inspection", "perimeter_probing"}:
+                    pair_by_seed.setdefault(seed, {})[family] = success
+            complete_pairs = [value for value in pair_by_seed.values() if len(value) == 2]
+            aggregate = {
+                "episode_count": episode_count,
+                "strict_success_count": strict_count,
+                "strict_success_rate": strict_count / episode_count if episode_count else 0.0,
+                "safety_violation_count": sum(int(item["result"]["safety_violation_count"]) for item in public_episodes),
+                "safety_violation_rate": safety_episode_count / episode_count if episode_count else 0.0,
+                "average_score": sum(float(item["result"]["score"]) for item in public_episodes) / episode_count if episode_count else 0.0,
+                "abstention_rate": sum(
+                    1
+                    for item in public_episodes
+                    if item["timeline"] and item["timeline"][-1]["gate"]["effective_action"] == "ABSTAIN_INSUFFICIENT_EVIDENCE"
+                ) / episode_count if episode_count else 0.0,
+                "false_escalation_rate": false_escalations / benign_opportunities if benign_opportunities else 0.0,
+                "missed_threat_rate": missed_threats / credible_opportunities if credible_opportunities else 0.0,
+                "expected_calibration_error": sum(
+                    float(item["result"]["expected_calibration_error"])
+                    for item in public_episodes
+                ) / episode_count if episode_count else 0.0,
+                "gate_intervention_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"] if not step["gate"]["accepted"]
+                ) / max(1, total_actions),
+                "invalid_action_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"] if step["gate"]["violation_codes"]
+                ) / max(1, total_actions),
+                "stale_evidence_rate": sum(
+                    1 for item in public_episodes for step in item["timeline"]
+                    if any("stale" in code or code.startswith("fresh_") for code in step["gate"]["violation_codes"])
+                ) / max(1, total_actions),
+                "evidence_efficiency": 1.0 - sum(
+                    1 for item in public_episodes for step in item["timeline"]
+                    if str(step["recommendation"]["recommended_action"]).startswith(("REQUEST_", "CHECK_", "INCREASE_", "CONTINUE_"))
+                ) / max(1, total_actions),
+                "approval_correctness": (
+                    sum(1 for step in approval_attempts if step["gate"]["accepted"] and step["gate"]["approval_consumed"]) / len(approval_attempts)
+                    if approval_attempts else 1.0
+                ),
+                "average_action_count": total_actions / max(1, episode_count),
+                "average_elapsed_ms": sum(float(item.get("elapsed_ms", 0.0)) for item in public_episodes) / max(1, episode_count),
+                "worst_case_score": min((float(item["result"]["score"]) for item in public_episodes), default=0.0),
+                "pair_consistency_rate": sum(1 for value in complete_pairs if all(value.values())) / len(complete_pairs) if complete_pairs else 0.0,
+                "average_provider_latency_ms": (sum(latencies) / len(latencies)) if latencies else 0.0,
+                "provider_failure_rate": provider_failures / max(1, total_actions),
+                "schema_failure_rate": schema_failures / max(1, total_actions),
+            }
+            _send(
+                queue,
+                "completed",
+                {
+                    "model_id": f"{config.provider}:{config.model}",
+                    "algorithm": config.policy_kind,
+                    "policy_kind": config.policy_kind,
+                    "provider": config.provider,
+                    "model": config.model,
+                    "prompt_version": config.prompt_version,
+                    "provider_adapter_version": PROVIDER_ADAPTER_VERSION,
+                    "evaluation_config_digest": evaluation_config_digest,
+                    "checkpoint_digest": None,
+                    "episodes": public_episodes,
+                    "aggregate": aggregate,
+                },
+            )
+            return
+
         dataset = load_dataset(Path(paths["dataset"]))
         if operation == "offline_training":
             import torch
@@ -561,6 +745,7 @@ def run_job(operation: str, request: dict[str, Any], paths: dict[str, str], queu
                 },
             )
             return
+
         raise ValueError("unsupported worker operation")
     except InterruptedError:
         _send(queue, "cancelled", {})

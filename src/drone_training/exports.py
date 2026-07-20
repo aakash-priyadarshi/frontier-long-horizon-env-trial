@@ -40,6 +40,12 @@ def public_record_summary(record: dict[str, Any]) -> dict[str, Any]:
             "compatibility",
             "results",
             "aligned_instances",
+            "policy_kind",
+            "provider",
+            "model",
+            "prompt_version",
+            "provider_adapter_version",
+            "evaluation_config_digest",
         )
         if key in record
     }
@@ -65,6 +71,11 @@ def public_evaluation_export(record: dict[str, Any]) -> dict[str, Any]:
         "record_digest": record["record_digest"],
         "application_commit": record.get("application_commit"),
         "checkpoint_digest": record.get("configuration", {}).get("checkpoint_digest"),
+        "policy_kind": record.get("policy_kind") or record.get("configuration", {}).get("policy_kind"),
+        "provider": record.get("provider") or record.get("configuration", {}).get("provider"),
+        "model": record.get("model") or record.get("configuration", {}).get("model"),
+        "prompt_version": record.get("prompt_version") or record.get("configuration", {}).get("prompt_version"),
+        "evaluation_config_digest": record.get("evaluation_config_digest"),
         "aggregate": record.get("aggregate", {}),
         "episodes": record.get("episodes", []),
     }

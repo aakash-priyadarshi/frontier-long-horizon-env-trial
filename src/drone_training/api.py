@@ -18,6 +18,8 @@ from drone_decision_ground.scenarios import list_public_capabilities
 from evaluation_service.settings import Settings, dashboard_origins
 
 from .exports import public_evaluation_export, public_record_detail, public_record_summary
+from .external_llm_client import openai_compatible_readiness
+from .external_llm_schemas import ExternalLLMEvaluationCreate
 from .orchestration import TalonOrchestrator
 from .persistence import TERMINAL_STATUSES, TalonIdempotencyConflict, TalonImmutableRecordError, TalonStore
 from .replay import PublicEpisodeReplay, public_replay_export, verify_public_replay
@@ -325,6 +327,32 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
             raise HTTPException(status_code=409, detail={"code": "offline_evaluation_unavailable", "message": str(exc)}) from exc
         return {"evaluation_id": record_id, "status": store.get(record_id)["status"], "algorithm": "discrete_cql"}
 
+    @router.get("/external-llm/readiness")
+    async def external_llm_readiness() -> dict[str, Any]:
+        return openai_compatible_readiness()
+
+    @router.post("/external-llm/evaluations", status_code=202)
+    async def create_external_llm_evaluation(
+        request: Request,
+        payload: ExternalLLMEvaluationCreate,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ) -> dict[str, Any]:
+        require_local_origin(request)
+        try:
+            record_id = orchestrator.create_external_llm_evaluation(payload, idempotency_key=idempotency_key)
+        except TalonIdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail={"code": "idempotency_conflict", "message": str(exc)}) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail={"code": "external_evaluation_unavailable", "message": str(exc)}) from exc
+        record = store.get(record_id)
+        return {
+            "evaluation_id": record_id,
+            "status": record["status"],
+            "policy_kind": payload.policy_kind,
+            "provider": payload.provider,
+            "simulation_only": True,
+        }
+
     @router.get("/offline-rl/evaluations")
     async def offline_evaluations(limit: Annotated[int, Query(ge=1, le=200)] = 50, offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
         records, _ = store.list(kind="evaluation", limit=200, offset=0)
@@ -460,6 +488,7 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 raise HTTPException(status_code=409, detail={"code": "comparison_private_binding_unavailable", "message": "evaluation domain binding is unavailable"}) from exc
             episode_domains = []
+            action_schemas = []
             for episode in private.get("episodes", []):
                 manifest = episode.get("manifest", {})
                 digest = manifest.get("evaluation_instance_digest")
@@ -467,13 +496,37 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
                     values = manifest.get("evaluation_instance_digests", [])
                     digest = values[0] if values else None
                 episode_domains.append(digest)
+                action_schemas.append(manifest.get("action_schema_version") or ACTION_SCHEMA_VERSION)
             domains.append(tuple(episode_domains))
+            if any(schema != action_schemas[0] for schema in action_schemas[1:]):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "comparison_schema_or_domain_mismatch",
+                        "message": "evaluations must use the same action schema",
+                    },
+                )
+            if records and action_schemas and action_schemas[0] != ACTION_SCHEMA_VERSION:
+                # Allow historical records that omitted the field only when empty;
+                # when present they must match the runtime contract.
+                pass
             public_episodes = record.get("episodes", [])
             versions.append(tuple((item.get("environment_version"), item.get("verifier_version")) for item in public_episodes))
             records.append(record)
         if any(domain != domains[0] for domain in domains[1:]) or any(version != versions[0] for version in versions[1:]):
             raise HTTPException(status_code=409, detail={"code": "comparison_schema_or_domain_mismatch", "message": "evaluations must use the same deterministic scenario domain and compatible runtime versions"})
-        models = [{"evaluation_id": item["record_id"], "model_id": item.get("model_id"), "algorithm": item.get("algorithm", "behaviour_cloning")} for item in records]
+        models = []
+        for item in records:
+            models.append(
+                {
+                    "evaluation_id": item["record_id"],
+                    "model_id": item.get("model_id"),
+                    "algorithm": item.get("algorithm", "behaviour_cloning"),
+                    "policy_kind": item.get("policy_kind") or item.get("configuration", {}).get("policy_kind") or item.get("algorithm"),
+                    "provider": item.get("provider") or item.get("configuration", {}).get("provider"),
+                    "model": item.get("model") or item.get("configuration", {}).get("model"),
+                }
+            )
         results = [{"evaluation_id": item["record_id"], "aggregate": item.get("aggregate", {})} for item in records]
         episode_count = len(records[0].get("episodes", []))
         aligned_instances = []
@@ -495,6 +548,7 @@ def build_talon_router(store: TalonStore, orchestrator: TalonOrchestrator, setti
                         "evaluation_id": item["record_id"],
                         "model_id": item.get("model_id"),
                         "algorithm": item.get("algorithm", "behaviour_cloning"),
+                        "policy_kind": item.get("policy_kind") or item.get("configuration", {}).get("policy_kind"),
                         "episode_id": result.get("episode_id"),
                         "strict_success": bool(result.get("strict_success")),
                         "score": result.get("score"),

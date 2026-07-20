@@ -127,7 +127,7 @@ def test_talon_failure_isolated_from_frontier_and_retryable(tmp_path: Path) -> N
         assert unavailable.json()["error"]["code"] == "talon_service_unavailable"
         assert client.get("/api/health/components").json()["talon"]["status"] == "unavailable"
         with sqlite3.connect(config.talon_database_path) as connection:
-            connection.execute("UPDATE talon_schema_meta SET value='2' WHERE key='schema_version'")
+            connection.execute("UPDATE talon_schema_meta SET value='3' WHERE key='schema_version'")
         assert client.get("/api/drone/health").status_code == 200
 
 

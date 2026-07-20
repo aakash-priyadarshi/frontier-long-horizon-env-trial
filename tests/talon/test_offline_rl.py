@@ -90,6 +90,22 @@ def test_public_architecture_width_is_not_confused_with_hidden_scenario_state() 
     assert find_public_leaks({"hidden_state": {"true_intent": "unknown"}})
 
 
+def test_public_output_token_bounds_are_not_confused_with_secret_credentials() -> None:
+    """Numeric output budgets contain the substring 'token' but are not secrets."""
+
+    assert find_public_leaks({"max_output_tokens": 300}) == []
+    assert find_public_leaks({"retry_output_tokens": 512}) == []
+    # Non-numeric or out-of-range values must not inherit the allowlist.
+    assert find_public_leaks({"max_output_tokens": "sk-live-not-a-budget"})
+    assert find_public_leaks({"max_output_tokens": 0})
+    # Genuine credential keys and values remain rejected.
+    assert find_public_leaks({"api_key": "sk-test-abcdefghijklmnopqrstuvwxyz"})
+    assert find_public_leaks({"authorization": "Bearer abcdefghijklmnop"})
+    assert find_public_leaks({"capability_token": "cap-abcdefghijklmnop"})
+    assert find_public_leaks({"access_token": "tok-abcdefghijklmnop"})
+    assert find_public_leaks({"token": "raw-secret-value-here"})
+
+
 def test_masking_precedes_reward_q_ranking() -> None:
     reward_q = torch.tensor([[100.0, 2.0] + [0.0] * 11])
     safety_q = torch.zeros_like(reward_q)

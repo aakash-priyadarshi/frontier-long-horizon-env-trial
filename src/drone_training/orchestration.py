@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .persistence import TERMINAL_STATUSES, TalonImmutableRecordError, TalonStore
+from .external_llm_schemas import ExternalLLMEvaluationCreate, PROVIDER_ADAPTER_VERSION
 from .schemas import DatasetCreate, EvaluationCreate, OfflineRLTrainingCreate, TrainingCreate
 from .worker import run_job
 
@@ -202,6 +203,39 @@ class TalonOrchestrator:
                 "private_evaluation": str(private / "verification.json"),
             },
             depends_on=(request.training_run_id,),
+            idempotency_key=idempotency_key,
+            start_background=start_background,
+        )
+
+    def create_external_llm_evaluation(
+        self,
+        request: ExternalLLMEvaluationCreate,
+        *,
+        idempotency_key: str | None = None,
+        start_background: bool = True,
+    ) -> str:
+        """Queue a parallel external / scripted-external evaluation (no checkpoint binding)."""
+
+        evaluation_id = "talon_eval_" + uuid.uuid4().hex
+        private = self.store._private_directory(evaluation_id)
+        configuration = request.model_dump(mode="json")
+        configuration["provider_adapter_version"] = PROVIDER_ADAPTER_VERSION
+        configuration["checkpoint_provenance"] = False
+        # Bound overall worker wall-clock by per-scenario timeout × episode count (+ headroom).
+        from drone_decision_verifier.hidden_scenarios import HIDDEN_FAMILY_KEYS
+
+        episode_budget = len(HIDDEN_FAMILY_KEYS) * int(request.seed_count) * int(request.timeout_seconds)
+        overall_timeout = min(7_200, max(int(request.timeout_seconds) + 30, episode_budget + 60))
+        return self._create(
+            operation="external_llm_evaluation",
+            record_id=evaluation_id,
+            kind="evaluation",
+            configuration=configuration,
+            timeout_seconds=overall_timeout,
+            paths={
+                "private_evaluation": str(private / "verification.json"),
+            },
+            depends_on=(),
             idempotency_key=idempotency_key,
             start_background=start_background,
         )

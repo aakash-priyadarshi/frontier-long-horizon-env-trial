@@ -11,7 +11,7 @@ from __future__ import annotations
 import hmac
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from drone_decision_ground.actions import DecisionAction
 from drone_decision_ground.observation import PublicObservation
@@ -44,6 +44,51 @@ class ReplayApprovalEvent(BaseModel):
     consumed: bool = False
 
 
+class PublicReplayMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    strict_success: bool
+    score: float = Field(ge=0, le=1)
+    safety_violation_count: int = Field(ge=0)
+    action_count: int = Field(ge=0)
+    abstention_rate: float = Field(ge=0, le=1)
+    gate_intervention_rate: float = Field(ge=0, le=1)
+    approval_correctness: float = Field(ge=0, le=1)
+    evidence_efficiency: float = Field(ge=0, le=1)
+    expected_calibration_error: float = Field(ge=0, le=1)
+    failed_categories: tuple[str, ...]
+
+
+class ExternalPolicyReplayProvenance(BaseModel):
+    """Public external-policy identity. Never carries secrets or raw prompts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_kind: Literal["external_llm", "scripted_external_baseline"]
+    provider: Literal["openai_compatible", "scripted_external"]
+    model: str = Field(min_length=1, max_length=200)
+    prompt_version: str = Field(min_length=1, max_length=80)
+    provider_adapter_version: str = Field(min_length=1, max_length=80)
+    evaluation_config_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+
+
+class ExternalPolicyStepDetail(BaseModel):
+    """Sanitised per-step external recommendation metadata for replay."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    selected_action: str
+    confidence: float = Field(ge=0, le=1)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=8)
+    decision_summary: str = Field(default="", max_length=240)
+    response_validation_ok: bool
+    provider_latency_ms: float | None = Field(default=None, ge=0)
+    failure_category: str | None = Field(default=None, max_length=64)
+    prompt_input_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    raw_response_digest: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{64}$")
+    parsed_response_digest: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{64}$")
+
+
 class PublicReplayStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
@@ -62,21 +107,7 @@ class PublicReplayStep(BaseModel):
     approval: ReplayApprovalEvent
     terminated: bool
     truncated: bool
-
-
-class PublicReplayMetrics(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
-
-    strict_success: bool
-    score: float = Field(ge=0, le=1)
-    safety_violation_count: int = Field(ge=0)
-    action_count: int = Field(ge=0)
-    abstention_rate: float = Field(ge=0, le=1)
-    gate_intervention_rate: float = Field(ge=0, le=1)
-    approval_correctness: float = Field(ge=0, le=1)
-    evidence_efficiency: float = Field(ge=0, le=1)
-    expected_calibration_error: float = Field(ge=0, le=1)
-    failed_categories: tuple[str, ...]
+    external_policy: ExternalPolicyStepDetail | None = None
 
 
 class PublicEpisodeReplay(BaseModel):
@@ -87,7 +118,8 @@ class PublicEpisodeReplay(BaseModel):
     replay_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     evaluation_id: str
     episode_id: str = Field(pattern=r"^ep_[a-f0-9]{24}$")
-    checkpoint_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    checkpoint_digest: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{64}$")
+    external_policy: ExternalPolicyReplayProvenance | None = None
     environment_version: str
     verifier_version: str
     terminal: Literal[True] = True
@@ -102,6 +134,14 @@ class PublicEpisodeReplay(BaseModel):
         if not (value[-1].terminated or value[-1].truncated):
             raise ValueError("replay does not terminate")
         return value
+
+    @model_validator(mode="after")
+    def provenance_xor(self) -> PublicEpisodeReplay:
+        if self.checkpoint_digest is None and self.external_policy is None:
+            raise ValueError("replay requires checkpoint_digest or external_policy provenance")
+        if self.checkpoint_digest is not None and self.external_policy is not None:
+            raise ValueError("replay cannot claim both checkpoint and external-policy provenance")
+        return self
 
 
 class PrivilegedReplayStep(BaseModel):
@@ -164,7 +204,11 @@ def _completed_evidence(observation: PublicObservation) -> tuple[str, ...]:
     )
 
 
-def _step_from_timeline(value: dict[str, Any], diagnostic: dict[str, Any] | None) -> PublicReplayStep:
+def _step_from_timeline(
+    value: dict[str, Any],
+    diagnostic: dict[str, Any] | None,
+    step_trace: dict[str, Any] | None = None,
+) -> PublicReplayStep:
     observation = PublicObservation.model_validate(value["observation"])
     recommendation = value["recommendation"]
     gate = GateDecision.model_validate(value["gate"])
@@ -172,6 +216,24 @@ def _step_from_timeline(value: dict[str, Any], diagnostic: dict[str, Any] | None
     if diagnostic is not None:
         safe_scores = diagnostic.get("top_action_scores", [])
         scores = tuple(ReplayActionScore.model_validate(item) for item in safe_scores[:5])
+    external_detail: ExternalPolicyStepDetail | None = None
+    if step_trace is not None:
+        external_detail = ExternalPolicyStepDetail(
+            selected_action=str(step_trace.get("selected_action") or recommendation["recommended_action"]),
+            confidence=float(step_trace.get("confidence", recommendation["action_confidence"])),
+            evidence_refs=tuple(step_trace.get("evidence_refs") or ()),
+            decision_summary=str(step_trace.get("decision_summary") or "")[:240],
+            response_validation_ok=bool(step_trace.get("schema_validation_ok")),
+            provider_latency_ms=(
+                None
+                if step_trace.get("provider_latency_ms") is None
+                else float(step_trace["provider_latency_ms"])
+            ),
+            failure_category=step_trace.get("failure_category"),
+            prompt_input_digest=str(step_trace["prompt_input_digest"]),
+            raw_response_digest=step_trace.get("raw_response_digest"),
+            parsed_response_digest=step_trace.get("parsed_response_digest"),
+        )
     return PublicReplayStep(
         sequence=int(value["sequence"]),
         simulated_time_ms=observation.timestamp_ms,
@@ -192,10 +254,16 @@ def _step_from_timeline(value: dict[str, Any], diagnostic: dict[str, Any] | None
         ),
         terminated=bool(value["terminated"]),
         truncated=bool(value["truncated"]),
+        external_policy=external_detail,
     )
 
 
-def build_public_replay(public_episode: dict[str, Any], *, decision_diagnostics: list[dict[str, Any]] | None = None) -> PublicEpisodeReplay:
+def build_public_replay(
+    public_episode: dict[str, Any],
+    *,
+    decision_diagnostics: list[dict[str, Any]] | None = None,
+    step_traces: list[dict[str, Any]] | None = None,
+) -> PublicEpisodeReplay:
     """Build an allowlisted immutable replay after strict grading has completed."""
 
     result = dict(public_episode["result"])
@@ -203,8 +271,13 @@ def build_public_replay(public_episode: dict[str, Any], *, decision_diagnostics:
     if not timeline or not (timeline[-1].get("terminated") or timeline[-1].get("truncated")):
         raise ValueError("active episodes cannot produce a replay")
     diagnostics = decision_diagnostics or []
+    traces = step_traces if step_traces is not None else list(public_episode.get("step_traces") or [])
     steps = tuple(
-        _step_from_timeline(value, diagnostics[index] if index < len(diagnostics) else None)
+        _step_from_timeline(
+            value,
+            diagnostics[index] if index < len(diagnostics) else None,
+            traces[index] if index < len(traces) else None,
+        )
         for index, value in enumerate(timeline)
     )
     action_count = len(steps)
@@ -229,12 +302,19 @@ def build_public_replay(public_episode: dict[str, Any], *, decision_diagnostics:
         "result_digest": result["result_digest"],
         "steps": [item.model_dump(mode="json") for item in steps],
     })
+    raw_checkpoint = public_episode.get("checkpoint_digest")
+    checkpoint_digest = str(raw_checkpoint) if raw_checkpoint else None
+    external_raw = public_episode.get("external_policy")
+    external_policy = (
+        ExternalPolicyReplayProvenance.model_validate(external_raw) if isinstance(external_raw, dict) else None
+    )
     provisional = PublicEpisodeReplay(
         replay_id="replay_" + identity.split(":", 1)[1][:24],
         replay_digest="sha256:" + "0" * 64,
         evaluation_id=str(public_episode["evaluation_id"]),
         episode_id=str(result["episode_id"]),
-        checkpoint_digest=str(public_episode["checkpoint_digest"]),
+        checkpoint_digest=checkpoint_digest,
+        external_policy=external_policy,
         environment_version=str(public_episode["environment_version"]),
         verifier_version=str(public_episode["verifier_version"]),
         metrics=metrics,
@@ -284,7 +364,7 @@ def public_replay_export(replay: PublicEpisodeReplay) -> dict[str, Any]:
     """Explicit public export allowlist; no privileged companion is accepted."""
 
     verified = verify_public_replay(replay)
-    return {
+    payload: dict[str, Any] = {
         "schema_version": verified.schema_version,
         "replay_id": verified.replay_id,
         "replay_digest": verified.replay_digest,
@@ -297,3 +377,6 @@ def public_replay_export(replay: PublicEpisodeReplay) -> dict[str, Any]:
         "metrics": verified.metrics.model_dump(mode="json"),
         "steps": [item.model_dump(mode="json") for item in verified.steps],
     }
+    if verified.external_policy is not None:
+        payload["external_policy"] = verified.external_policy.model_dump(mode="json")
+    return payload
