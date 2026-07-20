@@ -1,0 +1,334 @@
+{
+  "branch": "feature/talon-frontier-llm-evaluation",
+  "checks": {
+    "comparison_replay_export_validation": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k replay or export or comparison or product_api -q",
+      "duration_seconds": 61.324,
+      "exit_code": 0,
+      "name": "comparison_replay_export_probes",
+      "passed": true,
+      "test_count": 3
+    },
+    "credential_redaction_probes": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py tests/talon/test_offline_rl.py::test_public_output_token_bounds_are_not_confused_with_secret_credentials -k credential or api_key or authorization or token or redaction or sentinel -q",
+      "duration_seconds": 3.757,
+      "exit_code": 0,
+      "name": "credential_redaction_probes",
+      "passed": true,
+      "test_count": 2
+    },
+    "existing_receipt_integrity": {
+      "classification": "git_blob_identity",
+      "milestone_1": {
+        "content_sha256": "sha256:3e706ab22c7105b6db5498485af9f6a001caace9c7d4160d45cc0778717f46f8",
+        "git_blob": "2e018585be19b0bd625f9204fc807574437bc1c8",
+        "path": "evidence/talon-milestone-1.json",
+        "source_commit_blob": "2e018585be19b0bd625f9204fc807574437bc1c8",
+        "unchanged": true
+      },
+      "milestone_2": {
+        "content_sha256": "sha256:c16a8df294fdcc3e6d1bb42acdcda4e11f0b61eb7aff3fe1f736cf105aaa00ef",
+        "git_blob": "6e1ed7762d18ee3c2f6b299b839fda6a9fb0bed4",
+        "path": "evidence/talon-milestone-2.json",
+        "source_commit_blob": "6e1ed7762d18ee3c2f6b299b839fda6a9fb0bed4",
+        "unchanged": true
+      },
+      "passed": true
+    },
+    "external_evaluations_lack_checkpoint_provenance": {
+      "classification": "dynamically_executed",
+      "note": "Covered by external_llm tests asserting checkpoint_digest is null and checkpoint binding is rejected",
+      "passed": true
+    },
+    "frontier_scoring_verifier_authorities": {
+      "baseline_commit": "a7913195f8ab5e67f45cfe259ddd56d22d0e9e75",
+      "changed_files": [],
+      "classification": "git_diff",
+      "note": "Frontier scoring/verifier authorities unchanged relative to validated Milestone 2 tip",
+      "passed": true,
+      "paths": [
+        "src/training_ground",
+        "src/strict_verifier"
+      ]
+    },
+    "gate_and_verifier_authority": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k gate or verifier or approval or checkpoint or policy_client -q",
+      "duration_seconds": 4.152,
+      "exit_code": 0,
+      "name": "gate_verifier_authority_probes",
+      "passed": true,
+      "test_count": 5
+    },
+    "malformed_output_fail_closed_probes": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k malformed or fail_closed or abstain or parse -q",
+      "duration_seconds": 3.733,
+      "exit_code": 0,
+      "name": "malformed_fail_closed_probes",
+      "passed": true,
+      "test_count": 18
+    },
+    "playwright": {
+      "browser": "chromium",
+      "classification": "dynamically_executed",
+      "command": "npx playwright test --workers=1",
+      "count": 25,
+      "duration_seconds": 225.102,
+      "exit_code": 0,
+      "passed": true,
+      "real_browser": true,
+      "result": "dynamically_executed",
+      "skipped": 0,
+      "workers": 1
+    },
+    "prompt_public_projection_leak_probes": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k leak or prompt or public or projection -q",
+      "duration_seconds": 13.783,
+      "exit_code": 0,
+      "name": "prompt_public_projection_leak_probes",
+      "passed": true,
+      "test_count": 2
+    },
+    "receipt_completeness": {
+      "classification": "static",
+      "passed": true
+    },
+    "suite_verification": {
+      "classification": "dynamically_executed",
+      "commands": [
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon -q",
+          "duration_seconds": 209.925,
+          "exit_code": 0,
+          "name": "talon_python",
+          "passed": true,
+          "test_count": 224
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests -q",
+          "duration_seconds": 432.084,
+          "exit_code": 0,
+          "name": "complete_python",
+          "passed": true,
+          "test_count": 582
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "npm test -- --run",
+          "duration_seconds": 9.193,
+          "exit_code": 0,
+          "name": "dashboard_unit",
+          "passed": true,
+          "test_count": 50
+        },
+        {
+          "classification": "static",
+          "command": "npm run lint",
+          "duration_seconds": 28.592,
+          "exit_code": 0,
+          "name": "dashboard_lint",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "npm run typecheck",
+          "duration_seconds": 8.116,
+          "exit_code": 0,
+          "name": "dashboard_typecheck",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "npm run build",
+          "duration_seconds": 23.018,
+          "exit_code": 0,
+          "name": "dashboard_build",
+          "passed": true
+        },
+        {
+          "classification": "dependency_scan",
+          "command": "npm audit --audit-level=high",
+          "duration_seconds": 1.833,
+          "exit_code": 0,
+          "name": "npm_audit",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "C:\\project-bussiness\\frontier-agent-eval-platform\\talon-llm-eval-evidence\\.venv\\Scripts\\python.exe -m compileall -q src scripts tests",
+          "duration_seconds": 1.133,
+          "exit_code": 0,
+          "name": "compileall",
+          "passed": true
+        },
+        {
+          "classification": "dependency_scan",
+          "command": "uv lock --check",
+          "duration_seconds": 0.057,
+          "exit_code": 0,
+          "name": "uv_lock",
+          "passed": true
+        },
+        {
+          "classification": "static",
+          "command": "git diff --check",
+          "duration_seconds": 0.094,
+          "exit_code": 0,
+          "name": "diff_check",
+          "passed": true
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "npx playwright test --workers=1",
+          "duration_seconds": 225.102,
+          "exit_code": 0,
+          "name": "playwright_chromium",
+          "passed": true,
+          "test_count": 25
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k leak or prompt or public or projection -q",
+          "duration_seconds": 13.783,
+          "exit_code": 0,
+          "name": "prompt_public_projection_leak_probes",
+          "passed": true,
+          "test_count": 2
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py tests/talon/test_offline_rl.py::test_public_output_token_bounds_are_not_confused_with_secret_credentials -k credential or api_key or authorization or token or redaction or sentinel -q",
+          "duration_seconds": 3.757,
+          "exit_code": 0,
+          "name": "credential_redaction_probes",
+          "passed": true,
+          "test_count": 2
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k malformed or fail_closed or abstain or parse -q",
+          "duration_seconds": 3.733,
+          "exit_code": 0,
+          "name": "malformed_fail_closed_probes",
+          "passed": true,
+          "test_count": 18
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k timeout or auth or rate_limit or provider or failure -q",
+          "duration_seconds": 3.746,
+          "exit_code": 0,
+          "name": "provider_failure_probes",
+          "passed": true,
+          "test_count": 4
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k gate or verifier or approval or checkpoint or policy_client -q",
+          "duration_seconds": 4.152,
+          "exit_code": 0,
+          "name": "gate_verifier_authority_probes",
+          "passed": true,
+          "test_count": 5
+        },
+        {
+          "classification": "dynamically_executed",
+          "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k replay or export or comparison or product_api -q",
+          "duration_seconds": 61.324,
+          "exit_code": 0,
+          "name": "comparison_replay_export_probes",
+          "passed": true,
+          "test_count": 3
+        }
+      ],
+      "passed": true
+    },
+    "timeout_auth_rate_limit_provider_failure_probes": {
+      "classification": "dynamically_executed",
+      "command": "uv run --extra talon --extra test --extra adapters python -m pytest tests/talon/test_external_llm.py -k timeout or auth or rate_limit or provider or failure -q",
+      "duration_seconds": 3.746,
+      "exit_code": 0,
+      "name": "provider_failure_probes",
+      "passed": true,
+      "test_count": 4
+    }
+  },
+  "environment_detail": {
+    "dashboard_node_modules": {
+      "fsutil_exit_code": 1,
+      "local_non_junctioned": true,
+      "path": "C:\\project-bussiness\\frontier-agent-eval-platform\\talon-llm-eval-evidence\\apps\\dashboard\\node_modules",
+      "present": true
+    },
+    "playwright_browser": "chromium",
+    "playwright_list_only": false,
+    "playwright_real_browser": true,
+    "playwright_workers": 1,
+    "python_version": "3.12.13",
+    "uv_extras": [
+      "talon",
+      "test",
+      "adapters"
+    ],
+    "worktree": "detached",
+    "worktree_head": "a5dee0f8dcfd7cedbfe8c984c4e1faaf60ebd687"
+  },
+  "generated_at": "2026-07-20T18:32:48Z",
+  "limitations": [
+    "Simulation and evaluation only; no hardware actuation or external physical effects.",
+    "Not a production-safety certification.",
+    "Remote model weights are not source-bound or immutable.",
+    "Temperature zero does not guarantee deterministic provider responses.",
+    "Provider availability and latency vary outside scripted verification.",
+    "Human review remains mandatory for any operational use.",
+    "V1 production networking supports OpenAI-compatible providers only.",
+    "Automated verification uses scripted providers and does not prove live provider availability.",
+    "No live GPT or other paid-model smoke was performed for this receipt.",
+    "Measured suite counts are 224 TALON / 582 complete Python tests after adding the public max_output_tokens leak-checker regression (prior feature baseline was 222 / 580)."
+  ],
+  "passed": true,
+  "receipt_version": "talon.frontier-llm-evaluation-verification/1.0",
+  "schema_versions": {
+    "db_schema_version": 3,
+    "prompt_version": "talon-llm-policy/1.0",
+    "provider_adapter_version": "frontier.openai-compatible/1.0",
+    "receipt_version": "talon.frontier-llm-evaluation-verification/1.0",
+    "response_schema_version": "talon.external-llm-policy/1.0"
+  },
+  "scope": {
+    "automated_verification_uses_scripted_providers": true,
+    "evaluation_only": true,
+    "hardware_or_external_effects": false,
+    "human_review_mandatory": true,
+    "live_paid_model_smoke_performed": false,
+    "production_safety_certification": false,
+    "remote_model_weights_source_bound": false,
+    "simulation_only": true,
+    "temperature_zero_guarantees_determinism": false,
+    "v1_production_networking": "openai_compatible_only"
+  },
+  "scripted_providers_used_by_automated_verification": [
+    "scripted_external",
+    "scripted-valid",
+    "scripted-malformed"
+  ],
+  "source_commit": "a5dee0f8dcfd7cedbfe8c984c4e1faaf60ebd687",
+  "supported_policy_kinds": [
+    "external_llm",
+    "scripted_external_baseline"
+  ],
+  "supported_production_provider": "openai_compatible",
+  "test_counts": {
+    "complete_python": 582,
+    "dashboard_unit": 50,
+    "playwright_skipped": 0,
+    "playwright_total": 25,
+    "talon_python": 224
+  }
+}
